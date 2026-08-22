@@ -181,15 +181,41 @@ weights required.
 
 ---
 
+## Frontend Web Dashboard
+
+A commercial fleet safety operations dashboard built with **React**, **Vite**, **Tailwind CSS**, and **Recharts**.
+
+### Running the Dashboard Locally
+
+```bash
+# 1. Navigate to the frontend folder
+cd frontend
+
+# 2. Start the Vite development server
+npm run dev
+```
+
+Open your browser at `http://localhost:5173`.
+
+### Dashboard Capabilities
+- **Overview Dashboard (`/`)** — Real-time driver counts, today's alert metrics, fleet safety scores, circadian drowsiness trends (Recharts), and active route monitoring.
+- **Drivers Directory (`/drivers`)** — Commercial driver directory connected to Phase 1 registered database (Driver #1: Ruchika) with search and status filtering.
+- **Driver Dossier (`/drivers/:id`)** — Individual driver profile, trip history, sensor alerts, and safety scores.
+- **Live Vehicle Stream (`/live-monitoring`)** — Operational camera preview and telemetry layout (EAR, MAR, PERCLOS, Head Pose, MQ-3 alcohol sensor status) ready for Phase 2 computer vision streaming.
+- **Trip Logs (`/trips`)** — Commercial transport logs with route segments, durations, and safety incidents.
+- **Alert Console (`/alerts`)** — 3-tier severity alerts (Level 1 Low, Level 2 Moderate, Level 3 Critical) with multi-criteria filtering.
+- **Risk Analytics (`/analytics`)** — Fatigue risk curves, infractions by driver, safety score distribution, and rest break compliance.
+- **System Settings (`/settings`)** — Configuration reference for camera index, facial recognition thresholds, and notification dispatch policies.
+
+---
+
 ## Roadmap
 
-This is **Phase 1** of a larger system. Future phases will add:
+This is a multi-phase system:
 
-- Real-time drowsiness detection (EAR, MAR, PERCLOS)
-- Head-pose analysis
-- Infrared camera support
-- Alcohol detection (MQ3 sensor)
-- Three-level alert system
-- Trip and break logging
-- Driver safety scoring
-- Fleet-owner dashboard (FastAPI + web frontend)
+- **Phase 1: Driver Facial Authentication** (Completed)
+- **Phase 1.5: Fleet Owner Web Dashboard** (Completed)
+- **Phase 2: Real-time Drowsiness Detection & In-Cabin AI** (EAR, MAR, PERCLOS, Head Pose)
+- **Phase 3: Hardware Sensor Integration** (MQ-3 Alcohol Sensor & 3-Level Audio/Visual Alert Matrix)
+- **Phase 4: Backend API & Live WebSocket Streaming** (FastAPI Backend + Fleet Live Sync)
+

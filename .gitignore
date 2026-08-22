@@ -42,3 +42,9 @@ models/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# === Frontend artifacts ===
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+

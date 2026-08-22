@@ -1,0 +1,72 @@
+/**
+ * Fleet Commercial Trip Logs Dataset
+ * NOTE: All trips below represent simulated commercial transport dispatches for UI evaluation.
+ * Real registered driver Ruchika currently has no real trip records logged.
+ */
+
+export const MOCK_TRIPS = [
+  {
+    trip_id: 'TRP-1043',
+    driver_id: 2,
+    driver_name: 'Vikram Singh',
+    vehicle_plate: 'KA-04-E-4412',
+    origin: 'Hosur Logistics Park',
+    destination: 'Electronic City Terminal',
+    start_time: '2026-08-22T16:30:00Z',
+    end_time: null, // Active trip
+    duration_minutes: 105,
+    status: 'IN_PROGRESS',
+    alerts_count: 2,
+    max_drowsiness_score: '0.68 (Moderate)',
+    alcohol_status: 'CLEARED (0.00% BAC)',
+    safety_score_impact: '-1.2',
+  },
+  {
+    trip_id: 'TRP-1044',
+    driver_id: 5,
+    driver_name: 'Pooja Sharma',
+    vehicle_plate: 'KA-53-M-3329',
+    origin: 'Nelamangala Hub',
+    destination: 'Whitefield Freight Terminal',
+    start_time: '2026-08-22T17:00:00Z',
+    end_time: null,
+    duration_minutes: 75,
+    status: 'IN_PROGRESS',
+    alerts_count: 0,
+    max_drowsiness_score: '0.08 (None)',
+    alcohol_status: 'CLEARED (0.00% BAC)',
+    safety_score_impact: '+0.5',
+  },
+  {
+    trip_id: 'TRP-1041',
+    driver_id: 3,
+    driver_name: 'Anand Kumar',
+    vehicle_plate: 'KA-51-AB-1904',
+    origin: 'Peenya Hub',
+    destination: 'Mysore Distribution Center',
+    start_time: '2026-08-22T06:00:00Z',
+    end_time: '2026-08-22T10:45:00Z',
+    duration_minutes: 285,
+    status: 'COMPLETED',
+    alerts_count: 1,
+    max_drowsiness_score: '0.31 (Low)',
+    alcohol_status: 'CLEARED (0.00% BAC)',
+    safety_score_impact: '+0.8',
+  },
+  {
+    trip_id: 'TRP-1040',
+    driver_id: 4,
+    driver_name: 'Rajesh Nair',
+    vehicle_plate: 'KA-03-AA-9081',
+    origin: 'Mangalore Port',
+    destination: 'Hassan Depot',
+    start_time: '2026-08-21T18:00:00Z',
+    end_time: '2026-08-22T01:30:00Z',
+    duration_minutes: 450,
+    status: 'COMPLETED',
+    alerts_count: 4,
+    max_drowsiness_score: '0.85 (High)',
+    alcohol_status: 'CLEARED (0.00% BAC)',
+    safety_score_impact: '-4.5',
+  },
+];

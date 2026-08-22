@@ -42,7 +42,8 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     """
-    Create database tables if they do not already exist.
+    Create database tables if they do not already exist, and safely
+    migrate columns if extending an existing database.
 
     This is idempotent — safe to call on every application startup.
 
@@ -57,8 +58,45 @@ def init_db(conn: sqlite3.Connection) -> None:
             driver_id       INTEGER PRIMARY KEY AUTOINCREMENT,
             name            TEXT    NOT NULL,
             face_embedding  BLOB   NOT NULL,
-            created_at      TEXT    NOT NULL
+            created_at      TEXT    NOT NULL,
+            phone           TEXT,
+            email           TEXT,
+            license_no      TEXT
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vehicles (
+            vehicle_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            registration_number  TEXT    NOT NULL UNIQUE,
+            model                TEXT    NOT NULL,
+            vehicle_type         TEXT    NOT NULL,
+            created_at           TEXT    NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS driver_vehicle_assignments (
+            assignment_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+            driver_id       INTEGER NOT NULL,
+            vehicle_id      INTEGER NOT NULL,
+            assigned_at     TEXT    NOT NULL,
+            unassigned_at   TEXT,
+            FOREIGN KEY (driver_id) REFERENCES drivers(driver_id),
+            FOREIGN KEY (vehicle_id) REFERENCES vehicles(vehicle_id)
+        )
+        """
+    )
+
+    # Idempotent migration for existing database instances:
+    # Ensure nullable profile fields exist without altering existing embeddings.
+    cursor = conn.execute("PRAGMA table_info(drivers)")
+    existing_cols = {row["name"] for row in cursor.fetchall()}
+    for col in ["phone", "email", "license_no"]:
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE drivers ADD COLUMN {col} TEXT")
+
     conn.commit()
+

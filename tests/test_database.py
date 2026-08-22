@@ -9,6 +9,7 @@ import pytest
 
 from app.config import settings
 from app.database.connection import get_connection, init_db
+from app.database.vehicle_repository import VehicleRepository
 from app.database.driver_repository import (
     DriverRepository,
     _deserialize_embedding,
@@ -34,6 +35,10 @@ def repo(db_conn):
     """Yield a DriverRepository backed by the in-memory database."""
     return DriverRepository(db_conn)
 
+@pytest.fixture
+def vehicle_repo(db_conn):
+    """Yield a VehicleRepository backed by the in-memory database."""
+    return VehicleRepository(db_conn)
 
 def _random_embedding(dim: int = settings.EMBEDDING_DIM) -> np.ndarray:
     """Generate a random L2-normalised embedding for testing."""
@@ -130,3 +135,156 @@ class TestDriverRepository:
         driver = repo.get_driver_by_id(driver_id)
         assert driver is not None
         assert len(driver.created_at) > 0  # ISO-8601 string
+
+    def test_profile_fields_default_none(self, repo):
+        driver_id = repo.add_driver("Alice", _random_embedding())
+        driver = repo.get_driver_by_id(driver_id)
+        assert driver is not None
+        assert driver.phone is None
+        assert driver.email is None
+        assert driver.license_no is None
+
+    def test_update_driver_profile(self, repo):
+        driver_id = repo.add_driver("Alice", _random_embedding())
+        updated = repo.update_driver_profile(
+            driver_id,
+            name="Alice Smith",
+            phone="+91 98450 12345",
+            email="alice@example.com",
+            license_no="DL-KA012023004819",
+        )
+        assert updated is True
+
+        driver = repo.get_driver_by_id(driver_id)
+        assert driver is not None
+        assert driver.name == "Alice Smith"
+        assert driver.phone == "+91 98450 12345"
+        assert driver.email == "alice@example.com"
+        assert driver.license_no == "DL-KA012023004819"
+
+    def test_update_nonexistent_driver_profile(self, repo):
+        assert repo.update_driver_profile(9999, phone="1234567890") is False
+
+# ---------------------------------------------------------------------------
+# Vehicle and assignment tests
+# ---------------------------------------------------------------------------
+
+class TestVehicleRepository:
+    """Tests for vehicle and driver-vehicle assignment operations."""
+
+    def test_add_and_retrieve_vehicle(self, vehicle_repo):
+        vehicle_id = vehicle_repo.add_vehicle(
+            "KA-00-TEST-001",
+            "Tata Prima 4028.S",
+            "Heavy Haul",
+        )
+
+        assert isinstance(vehicle_id, int)
+        assert vehicle_id >= 1
+
+        vehicle = vehicle_repo.get_vehicle_by_id(vehicle_id)
+
+        assert vehicle is not None
+        assert vehicle.vehicle_id == vehicle_id
+        assert vehicle.registration_number == "KA-00-TEST-001"
+        assert vehicle.model == "Tata Prima 4028.S"
+        assert vehicle.vehicle_type == "Heavy Haul"
+
+    def test_duplicate_vehicle_registration_is_rejected(self, vehicle_repo):
+        vehicle_repo.add_vehicle(
+            "KA-00-TEST-001",
+            "Tata Prima 4028.S",
+            "Heavy Haul",
+        )
+
+        with pytest.raises(ValueError, match="already exists"):
+            vehicle_repo.add_vehicle(
+                "KA-00-TEST-001",
+                "Another Truck",
+                "Cargo",
+            )
+
+    def test_assign_vehicle_to_driver(self, repo, vehicle_repo):
+        driver_id = repo.add_driver("Ruchika", _random_embedding())
+
+        vehicle_id = vehicle_repo.add_vehicle(
+            "KA-00-TEST-001",
+            "Tata Prima 4028.S",
+            "Heavy Haul",
+        )
+
+        assignment_id = vehicle_repo.assign_vehicle(
+            driver_id,
+            vehicle_id,
+        )
+
+        assert isinstance(assignment_id, int)
+        assert assignment_id >= 1
+
+        assignment = vehicle_repo.get_current_assignment(driver_id)
+
+        assert assignment is not None
+        assert assignment.driver_id == driver_id
+        assert assignment.vehicle_id == vehicle_id
+        assert assignment.vehicle.registration_number == "KA-00-TEST-001"
+
+    def test_assigning_new_vehicle_closes_previous_assignment(
+        self,
+        repo,
+        vehicle_repo,
+    ):
+        driver_id = repo.add_driver("Ruchika", _random_embedding())
+
+        first_vehicle = vehicle_repo.add_vehicle(
+            "KA-00-TEST-001",
+            "Tata Prima 4028.S",
+            "Heavy Haul",
+        )
+
+        second_vehicle = vehicle_repo.add_vehicle(
+            "KA-00-TEST-002",
+            "Ashok Leyland 2820",
+            "Cargo",
+        )
+
+        vehicle_repo.assign_vehicle(driver_id, first_vehicle)
+        vehicle_repo.assign_vehicle(driver_id, second_vehicle)
+
+        current = vehicle_repo.get_current_assignment(driver_id)
+
+        assert current is not None
+        assert current.vehicle_id == second_vehicle
+
+        history = vehicle_repo.get_assignment_history(driver_id)
+
+        assert len(history) == 2
+
+        old_assignment = next(
+            a for a in history
+            if a.vehicle_id == first_vehicle
+        )
+
+        assert old_assignment.unassigned_at is not None
+
+    def test_unassign_vehicle(self, repo, vehicle_repo):
+        driver_id = repo.add_driver("Ruchika", _random_embedding())
+
+        vehicle_id = vehicle_repo.add_vehicle(
+            "KA-00-TEST-001",
+            "Tata Prima 4028.S",
+            "Heavy Haul",
+        )
+
+        vehicle_repo.assign_vehicle(driver_id, vehicle_id)
+
+        assert vehicle_repo.unassign_vehicle(driver_id) is True
+        assert vehicle_repo.get_current_assignment(driver_id) is None
+
+    def test_unassign_when_no_vehicle_returns_false(
+        self,
+        repo,
+        vehicle_repo,
+    ):
+        driver_id = repo.add_driver("Ruchika", _random_embedding())
+
+        assert vehicle_repo.unassign_vehicle(driver_id) is False
