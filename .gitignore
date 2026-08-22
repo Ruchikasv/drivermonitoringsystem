@@ -1,0 +1,44 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# === Virtual environment ===
+.venv/
+venv/
+env/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Project: Biometric data — NEVER commit ===
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# === Project: Model weights (large binary files) ===
+models/
+!models/.gitkeep
+
+# === Environment variables ===
+.env
+.env.local
+
+# === Test / coverage artifacts ===
+.pytest_cache/
+htmlcov/
+.coverage

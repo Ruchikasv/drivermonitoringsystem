@@ -1,0 +1,8 @@
+# Phase 1 — Driver Facial Authentication
+opencv-contrib-python>=5.0.0
+numpy>=2.0.0
+insightface>=0.7.3
+onnxruntime>=1.17.0
+
+# Testing
+pytest>=8.0.0
