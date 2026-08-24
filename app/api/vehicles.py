@@ -13,6 +13,12 @@ class VehicleCreate(BaseModel):
     vehicle_type: str
 
 
+class VehicleUpdate(BaseModel):
+    registration_number: str
+    model: str
+    vehicle_type: str
+
+
 class VehicleAssignment(BaseModel):
     vehicle_id: int
 
@@ -38,8 +44,10 @@ def create_vehicle(vehicle: VehicleCreate):
             "model": created.model,
             "vehicle_type": created.vehicle_type,
             "created_at": created.created_at,
+            "assigned_driver": None,
         }
-
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
 
@@ -50,19 +58,59 @@ def get_vehicles():
 
     try:
         repo = VehicleRepository(conn)
-        vehicles = repo.get_all_vehicles()
+        vehicles = repo.get_all_vehicles_with_assignments()
 
-        return [
-            {
-                "vehicle_id": v.vehicle_id,
-                "registration_number": v.registration_number,
-                "model": v.model,
-                "vehicle_type": v.vehicle_type,
-                "created_at": v.created_at,
-            }
-            for v in vehicles
-        ]
+        return vehicles
 
+    finally:
+        conn.close()
+
+
+@router.put("/vehicles/{vehicle_id}")
+def update_vehicle(vehicle_id: int, vehicle: VehicleUpdate):
+    conn = get_connection()
+
+    try:
+        repo = VehicleRepository(conn)
+        updated = repo.update_vehicle(
+            vehicle_id=vehicle_id,
+            registration_number=vehicle.registration_number,
+            model=vehicle.model,
+            vehicle_type=vehicle.vehicle_type,
+        )
+
+        # Get assignment metadata
+        all_v = repo.get_all_vehicles_with_assignments()
+        assigned_driver = None
+        for v in all_v:
+            if v["vehicle_id"] == vehicle_id:
+                assigned_driver = v.get("assigned_driver")
+                break
+
+        return {
+            "vehicle_id": updated.vehicle_id,
+            "registration_number": updated.registration_number,
+            "model": updated.model,
+            "vehicle_type": updated.vehicle_type,
+            "created_at": updated.created_at,
+            "assigned_driver": assigned_driver,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@router.delete("/vehicles/{vehicle_id}")
+def delete_vehicle(vehicle_id: int):
+    conn = get_connection()
+
+    try:
+        repo = VehicleRepository(conn)
+        repo.delete_vehicle(vehicle_id)
+        return {"success": True, "message": "Vehicle deleted successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
 
@@ -99,7 +147,24 @@ def assign_vehicle(
             "vehicle_type": current.vehicle.vehicle_type,
             "assigned_at": current.assigned_at,
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
 
+
+@router.delete("/drivers/{driver_id}/vehicle")
+def unassign_vehicle(driver_id: int):
+    conn = get_connection()
+
+    try:
+        repo = VehicleRepository(conn)
+        unassigned = repo.unassign_vehicle(driver_id)
+        return {
+            "success": unassigned,
+            "driver_id": driver_id,
+            "message": "Vehicle unassigned successfully" if unassigned else "No active vehicle assignment found",
+        }
     finally:
         conn.close()
 
@@ -132,4 +197,4 @@ def get_driver_vehicle(driver_id: int):
         }
 
     finally:
-        conn.close()
+        conn.close()

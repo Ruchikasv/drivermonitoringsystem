@@ -10,17 +10,21 @@ import {
   Settings,
   ShieldCheck,
   Truck,
+  Camera,
+  ExternalLink,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { name: 'Dashboard', path: '/', icon: LayoutDashboard },
   { name: 'Drivers', path: '/drivers', icon: Users },
-  { name: 'Live Monitoring', path: '/live-monitoring', icon: Eye, badge: 'Preview' },
+  { name: 'Vehicles', path: '/vehicles', icon: Truck },
+  { name: 'Live Surveillance', path: '/live-monitoring', icon: Eye, badge: 'Live' },
+  { name: 'Incidents & Evidence', path: '/incidents', icon: Camera },
   { name: 'Trips', path: '/trips', icon: Route },
-  { name: 'Alerts', path: '/alerts', icon: AlertTriangle, alertBadge: true },
   { name: 'Analytics', path: '/analytics', icon: BarChart3 },
   { name: 'Settings', path: '/settings', icon: Settings },
 ];
+
 
 export default function Sidebar() {
   return (
@@ -71,16 +75,24 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* System Status Footer */}
-      <div className="p-4 border-t border-slate-800 bg-slate-950/30">
+      {/* System Status & Driver Portal Button */}
+      <div className="p-4 border-t border-slate-800 bg-slate-950/30 space-y-3">
+        <NavLink
+          to="/driver"
+          className="flex items-center justify-center gap-2 w-full py-2.5 px-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs rounded-xl shadow-md transition"
+        >
+          <Truck className="w-4 h-4" /> Driver Cab Portal &rarr;
+        </NavLink>
+
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/50">
           <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
           <div className="text-[11px] truncate">
-            <span className="font-semibold text-slate-200 block">Auth Engine v1.0</span>
-            <span className="text-slate-400 text-[10px]">InsightFace / ArcFace Ready</span>
+            <span className="font-semibold text-slate-200 block">DMS Engine v2.0</span>
+            <span className="text-slate-400 text-[10px]">ArcFace + FatigueLSTM Ready</span>
           </div>
         </div>
       </div>
+
     </aside>
   );
 }

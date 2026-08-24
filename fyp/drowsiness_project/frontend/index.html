@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>NeuraDrive — Predictive Driver State Intelligence</title>
+<link rel="stylesheet" href="/static/style.css" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="critical-flash"></div>
+
+  <header>
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>NeuraDrive</h1>
+      <span class="tagline">Predictive Multi-Modal Driver State Intelligence</span>
+    </div>
+    <div class="header-controls">
+      <button id="sound-toggle" class="icon-btn" title="Mute/unmute alarm">🔊 Sound On</button>
+      <div id="conn-status" class="status disconnected">Connecting…</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="video-panel">
+      <div class="panel-title">Live Camera Feed</div>
+      <img id="video-frame" alt="Live feed will appear here" />
+      <div class="metrics-row">
+        <div class="metric"><span class="label">EAR (L / R)</span><span id="m-ear">--</span></div>
+        <div class="metric"><span class="label">MAR</span><span id="m-mar">--</span></div>
+        <div class="metric"><span class="label">PERCLOS</span><span id="m-perclos">--</span></div>
+        <div class="metric"><span class="label">Head Pitch</span><span id="m-pitch">--</span></div>
+      </div>
+    </section>
+
+    <section class="fatigue-panel">
+      <div class="panel-title">Fatigue State (Karolinska Sleepiness Scale)</div>
+      <div class="kss-display">
+        <div id="kss-score" class="kss-score">--</div>
+        <div id="kss-label" class="kss-label">Waiting for data…</div>
+        <div id="kss-source" class="kss-source"></div>
+      </div>
+      <div class="prediction-box">
+        <span class="label">Probability of reaching critical fatigue within 5 min:</span>
+        <div class="prob-bar-track"><div id="prob-bar-fill" class="prob-bar-fill"></div></div>
+        <span id="prob-value">--</span>
+      </div>
+      <canvas id="kss-chart" height="120"></canvas>
+    </section>
+
+    <section class="alert-panel">
+      <div class="panel-title">Alert Status</div>
+      <div id="alert-banner" class="alert-banner alert-none">System nominal — no alerts</div>
+    </section>
+
+    <section class="incidents-panel">
+      <div class="panel-title-row">
+        <div class="panel-title">Incident Log</div>
+        <button id="download-csv" class="download-btn">⬇ Download Incident Log (CSV)</button>
+      </div>
+      <table id="incidents-table">
+        <thead>
+          <tr><th>Time</th><th>Tier</th><th>KSS</th><th>Message</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="incidents-empty" class="incidents-empty">No incidents yet this session.</div>
+    </section>
+  </main>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>

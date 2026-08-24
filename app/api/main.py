@@ -1,27 +1,48 @@
 """
-FastAPI application entry point for the Driver Monitoring System.
+FastAPI application entry point for the Fleet Safety Management System.
 
-Phase 1 API:
-- Driver information
-- Driver profile
-- Vehicle assignment
-
-Drowsiness monitoring and sensor APIs will be added in later phases.
+Phase 1  — Driver information, profile, vehicle assignment
+Phase 2  — Drowsiness detection engine (NeuraDrive / FYP integration)
+Phase 3+ — Monitoring sessions, incidents, evidence, WebSocket streaming
 """
-from app.api.drivers import router as drivers_router
-from app.api.vehicles import router as vehicles_router
+
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database.connection import get_connection, init_db
+from app.api.drivers import router as drivers_router
+from app.api.vehicles import router as vehicles_router
+from app.api.auth import router as auth_router
+from app.api.monitoring import router as monitoring_router
+from app.api.incidents import router as incidents_router
+from app.api.monitoring_ws import router as ws_router
+from app.database.connection import get_connection, init_db, seed_default_data
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialise the SQLite database on startup."""
+    conn = get_connection()
+    init_db(conn)
+    seed_default_data(conn)
+    conn.close()
+    yield
+
 
 app = FastAPI(
     title="Fleet Safety Management API",
-    description="Backend API for the Driver Monitoring and Fleet Safety System",
-    version="1.0.0",
+    description=(
+        "Backend API for the Intelligent Driver Monitoring and Fleet Safety "
+        "Management System for Commercial Vehicles."
+    ),
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
-# Enable CORS for frontend development and production
+# ---------------------------------------------------------------------------
+# CORS — allow the Vite dev server and any LAN client
+# ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,16 +51,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Phase 1 & Auth routers
+# ---------------------------------------------------------------------------
 app.include_router(drivers_router)
 app.include_router(vehicles_router)
+app.include_router(auth_router)
 
-
-@app.on_event("startup")
-def startup() -> None:
-    """Initialise the SQLite database when the API starts."""
-    conn = get_connection()
-    init_db(conn)
-    conn.close()
+# ---------------------------------------------------------------------------
+# Phase 2+ routers (sessions, incidents — WebSocket added in Phase 5)
+# ---------------------------------------------------------------------------
+app.include_router(monitoring_router)
+app.include_router(incidents_router)
+app.include_router(ws_router)
 
 
 @app.get("/")
@@ -48,11 +72,11 @@ def root():
     return {
         "status": "online",
         "service": "Fleet Safety Management API",
-        "phase": "Phase 1.5",
+        "version": "2.0.0",
     }
 
 
 @app.get("/health")
 def health():
     """API health check."""
-    return {"status": "healthy"}
+    return {"status": "healthy"}

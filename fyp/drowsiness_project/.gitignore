@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+backend/models/face_landmarker.task
+logs/incidents.jsonl
+.DS_Store

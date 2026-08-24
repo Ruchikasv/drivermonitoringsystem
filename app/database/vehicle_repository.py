@@ -177,6 +177,130 @@ class VehicleRepository:
             for row in rows
         ]
 
+    def get_all_vehicles_with_assignments(self) -> list[dict]:
+        """Return all vehicles in the fleet along with their current active driver assignment."""
+        rows = self._conn.execute(
+            """
+            SELECT 
+                v.vehicle_id,
+                v.registration_number,
+                v.model,
+                v.vehicle_type,
+                v.created_at,
+                a.driver_id AS assigned_driver_id,
+                d.name AS assigned_driver_name
+            FROM vehicles v
+            LEFT JOIN driver_vehicle_assignments a
+                ON v.vehicle_id = a.vehicle_id AND a.unassigned_at IS NULL
+            LEFT JOIN drivers d
+                ON a.driver_id = d.driver_id
+            ORDER BY v.registration_number
+            """
+        ).fetchall()
+
+        result = []
+        for row in rows:
+            assigned_driver = None
+            if row["assigned_driver_id"] is not None:
+                assigned_driver = {
+                    "driver_id": row["assigned_driver_id"],
+                    "name": row["assigned_driver_name"] or f"Driver #{row['assigned_driver_id']}"
+                }
+            result.append({
+                "vehicle_id": row["vehicle_id"],
+                "registration_number": row["registration_number"],
+                "model": row["model"],
+                "vehicle_type": row["vehicle_type"],
+                "created_at": row["created_at"],
+                "assigned_driver": assigned_driver
+            })
+        return result
+
+    def update_vehicle(
+        self,
+        vehicle_id: int,
+        registration_number: str,
+        model: str,
+        vehicle_type: str,
+    ) -> VehicleRecord:
+        """Update vehicle details."""
+        registration_number = registration_number.strip()
+        model = model.strip()
+        vehicle_type = vehicle_type.strip()
+
+        if not registration_number:
+            raise ValueError("Registration number cannot be empty.")
+        if not model:
+            raise ValueError("Vehicle model cannot be empty.")
+        if not vehicle_type:
+            raise ValueError("Vehicle type cannot be empty.")
+
+        existing_v = self.get_vehicle_by_id(vehicle_id)
+        if existing_v is None:
+            raise ValueError(f"Vehicle ID {vehicle_id} does not exist.")
+
+        dup = self._conn.execute(
+            """
+            SELECT vehicle_id
+            FROM vehicles
+            WHERE registration_number = ? AND vehicle_id != ?
+            """,
+            (registration_number, vehicle_id),
+        ).fetchone()
+
+        if dup is not None:
+            raise ValueError(f"Vehicle registration '{registration_number}' already exists.")
+
+        self._conn.execute(
+            """
+            UPDATE vehicles
+            SET registration_number = ?, model = ?, vehicle_type = ?
+            WHERE vehicle_id = ?
+            """,
+            (registration_number, model, vehicle_type, vehicle_id),
+        )
+        self._conn.commit()
+
+        updated = self.get_vehicle_by_id(vehicle_id)
+        if updated is None:
+            raise ValueError("Updated vehicle not found.")
+        return updated
+
+    def delete_vehicle(self, vehicle_id: int) -> bool:
+        """Delete a vehicle if it is not currently assigned to any driver."""
+        vehicle = self.get_vehicle_by_id(vehicle_id)
+        if vehicle is None:
+            raise ValueError(f"Vehicle ID {vehicle_id} does not exist.")
+
+        active_assignment = self._conn.execute(
+            """
+            SELECT a.driver_id, d.name
+            FROM driver_vehicle_assignments a
+            LEFT JOIN drivers d ON a.driver_id = d.driver_id
+            WHERE a.vehicle_id = ? AND a.unassigned_at IS NULL
+            """,
+            (vehicle_id,),
+        ).fetchone()
+
+        if active_assignment is not None:
+            driver_name = active_assignment["name"] or f"Driver #{active_assignment['driver_id']}"
+            driver_id = active_assignment["driver_id"]
+            raise ValueError(
+                f"Vehicle {vehicle.registration_number} is currently assigned to {driver_name} (#{driver_id}). Remove the assignment before deleting this vehicle."
+            )
+
+        self._conn.execute(
+            "DELETE FROM driver_vehicle_assignments WHERE vehicle_id = ?",
+            (vehicle_id,),
+        )
+
+        self._conn.execute(
+            "DELETE FROM vehicles WHERE vehicle_id = ?",
+            (vehicle_id,),
+        )
+        self._conn.commit()
+        return True
+
     # -- Assignment ----------------------------------------------------------
 
     def assign_vehicle(
@@ -187,7 +311,7 @@ class VehicleRepository:
         """
         Assign a vehicle to a driver.
 
-        If the driver already has an active vehicle assignment,
+        If the vehicle or driver already has an active vehicle assignment,
         that assignment is closed before the new assignment is created.
 
         Returns
@@ -226,6 +350,17 @@ class VehicleRepository:
             raise ValueError(f"Vehicle ID {vehicle_id} does not exist.")
 
         now = datetime.now(timezone.utc).isoformat()
+
+        # Close any active assignment for this vehicle (if assigned to another driver).
+        self._conn.execute(
+            """
+            UPDATE driver_vehicle_assignments
+            SET unassigned_at = ?
+            WHERE vehicle_id = ?
+              AND unassigned_at IS NULL
+            """,
+            (now, vehicle_id),
+        )
 
         # Close the driver's previous active assignment, if any.
         self._conn.execute(

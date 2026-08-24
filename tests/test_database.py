@@ -288,3 +288,23 @@ class TestVehicleRepository:
         driver_id = repo.add_driver("Ruchika", _random_embedding())
 
         assert vehicle_repo.unassign_vehicle(driver_id) is False
+
+    def test_update_vehicle(self, vehicle_repo):
+        v_id = vehicle_repo.add_vehicle("KA-01-V1", "Model1", "Cargo")
+        updated = vehicle_repo.update_vehicle(v_id, "KA-01-V1-UPDATED", "Model1-Plus", "Heavy Haul")
+        assert updated.registration_number == "KA-01-V1-UPDATED"
+        assert updated.model == "Model1-Plus"
+        assert updated.vehicle_type == "Heavy Haul"
+
+    def test_delete_available_vehicle(self, vehicle_repo):
+        v_id = vehicle_repo.add_vehicle("KA-01-V2", "Model2", "Cargo")
+        assert vehicle_repo.delete_vehicle(v_id) is True
+        assert vehicle_repo.get_vehicle_by_id(v_id) is None
+
+    def test_delete_assigned_vehicle_is_blocked(self, repo, vehicle_repo):
+        driver_id = repo.add_driver("Ruchika", _random_embedding())
+        v_id = vehicle_repo.add_vehicle("KA-01-V3", "Model3", "Cargo")
+        vehicle_repo.assign_vehicle(driver_id, v_id)
+
+        with pytest.raises(ValueError, match="currently assigned"):
+            vehicle_repo.delete_vehicle(v_id)

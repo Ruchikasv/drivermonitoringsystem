@@ -1,0 +1,13 @@
+# Core CV / ML
+mediapipe>=0.10.14
+opencv-python>=4.9.0
+numpy>=1.26,<3.0
+torch>=2.2
+
+# Backend / API
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+
+# Used only by the test client during development (optional)
+httpx>=0.27

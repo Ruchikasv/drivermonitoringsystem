@@ -73,3 +73,19 @@ REGISTRATION_FRAME_DELAY: float = float(os.getenv("DMS_REG_DELAY", "0.3"))
 DUPLICATE_DETECTION_THRESHOLD: float = float(
     os.getenv("DMS_DUPLICATE_THRESHOLD", "0.55")
 )
+
+# ---------------------------------------------------------------------------
+# Drowsiness Detection Engine (Phase 2+)
+# ---------------------------------------------------------------------------
+
+# MediaPipe FatigueLSTM trained weights.
+FATIGUE_LSTM_PATH: Path = MODEL_DIR / "fatigue_lstm_weights.pt"
+
+# MediaPipe FaceLandmarker .task bundle.
+FACE_LANDMARKER_PATH: Path = MODEL_DIR / "face_landmarker.task"
+
+# Directory where drowsiness evidence screenshots are stored.
+EVIDENCE_DIR: Path = DATA_DIR / "evidence"
+
+# Target camera FPS for the monitoring WebSocket loop.
+MONITORING_FPS: int = int(os.getenv("DMS_MONITORING_FPS", "15"))
