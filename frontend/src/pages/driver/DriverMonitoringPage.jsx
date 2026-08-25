@@ -56,6 +56,21 @@ export default function DriverMonitoringPage() {
 
   // Web Audio chime generator
   const playAlertSound = (tier) => {
+    // Attempt haptic vibration if supported by device/browser
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try {
+        if (tier === 'critical') {
+          navigator.vibrate([200, 100, 200, 100, 400]);
+        } else if (tier === 'warning') {
+          navigator.vibrate([150, 100, 150]);
+        } else {
+          navigator.vibrate(100);
+        }
+      } catch {
+        // Graceful fallback: vibration not supported or permission denied on desktop
+      }
+    }
+
     if (!audioEnabled) return;
     try {
       if (!audioCtxRef.current) {

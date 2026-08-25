@@ -51,14 +51,14 @@ export default function TripsPage() {
   return (
     <div className="space-y-6">
       {/* Notice Banner */}
-      <div className="p-3.5 rounded-xl bg-slate-100 border border-slate-200 text-xs text-slate-700 flex items-start gap-2.5">
+      <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-100 text-xs text-blue-900 flex items-start gap-2.5">
         <Route className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
         <div>
-          <span className="font-bold text-slate-900 block text-xs">
-            Commercial Fleet Dispatch Simulation (Demo Records)
+          <span className="font-bold text-blue-950 block text-xs">
+            Commercial Fleet Monitoring & Trip Dispatches
           </span>
-          <p className="mt-0.5 text-slate-600">
-            Trip logs shown below represent simulated commercial transport dispatches for UI evaluation. Live route dispatches and trip telemetry will bind to the backend API.
+          <p className="mt-0.5 text-blue-800">
+            Trip logs reflect active and completed monitoring sessions from the database. Duration, driver safety scores, and vehicle telemetry are synchronized in real time.
           </p>
         </div>
       </div>

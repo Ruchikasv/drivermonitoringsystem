@@ -17,6 +17,9 @@ from app.api.auth import router as auth_router
 from app.api.monitoring import router as monitoring_router
 from app.api.incidents import router as incidents_router
 from app.api.monitoring_ws import router as ws_router
+from app.api.trips import router as trips_router
+from app.api.alerts import router as alerts_router
+from app.api.analytics_api import router as analytics_router
 from app.database.connection import get_connection, init_db, seed_default_data
 
 
@@ -59,11 +62,14 @@ app.include_router(vehicles_router)
 app.include_router(auth_router)
 
 # ---------------------------------------------------------------------------
-# Phase 2+ routers (sessions, incidents — WebSocket added in Phase 5)
+# Phase 2+ routers (sessions, incidents, ws, trips, alerts, analytics)
 # ---------------------------------------------------------------------------
 app.include_router(monitoring_router)
 app.include_router(incidents_router)
 app.include_router(ws_router)
+app.include_router(trips_router)
+app.include_router(alerts_router)
+app.include_router(analytics_router)
 
 
 @app.get("/")

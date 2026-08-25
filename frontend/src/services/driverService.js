@@ -12,7 +12,7 @@ function normalizeDriver(d) {
   if (!d) return null;
   return {
     ...d,
-    status: d.status || 'ACTIVE',
+    status: d.status || 'OFF_DUTY',
     phone: d.phone || null,
     email: d.email || null,
     license_no: d.license_no || null,
@@ -101,6 +101,6 @@ export const driverService = {
    */
   async getActiveDrivers() {
     const drivers = await this.getDrivers();
-    return drivers.filter((d) => d.status === 'ACTIVE' || d.status === undefined || d.isRegisteredBackend);
+    return drivers.filter((d) => d.status === 'ON_ROUTE');
   }
 };

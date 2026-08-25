@@ -67,9 +67,44 @@ class MonitoringRepository:
     # Sessions
     # ------------------------------------------------------------------
 
-    def create_session(self, driver_id: int, vehicle_id: Optional[int]) -> int:
-        """Insert a new ACTIVE monitoring session and return its session_id."""
+    def get_active_session_by_driver(self, driver_id: int) -> Optional[MonitoringSession]:
+        """Return the single ACTIVE session for a driver, or None if off-duty."""
+        row = self._conn.execute(
+            """
+            SELECT * FROM monitoring_sessions 
+            WHERE driver_id = ? AND status = 'ACTIVE' AND end_time IS NULL 
+            ORDER BY session_id DESC LIMIT 1
+            """,
+            (driver_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return MonitoringSession(**dict(row))
+
+    def close_active_sessions_for_driver(self, driver_id: int, status: str = "INTERRUPTED") -> int:
+        """Explicitly close any existing ACTIVE sessions for a driver."""
         now = datetime.now(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            """
+            UPDATE monitoring_sessions
+            SET end_time = ?, status = ?
+            WHERE driver_id = ? AND status = 'ACTIVE'
+            """,
+            (now, status, driver_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    def create_session(self, driver_id: int, vehicle_id: Optional[int], close_existing_active: bool = True) -> int:
+        """
+        Insert a new ACTIVE monitoring session for a driver.
+        Guarantees at most one ACTIVE session per driver by explicitly closing
+        any stale active sessions before creating the new one.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        if close_existing_active:
+            self.close_active_sessions_for_driver(driver_id, status="INTERRUPTED")
+
         cursor = self._conn.execute(
             """
             INSERT INTO monitoring_sessions (driver_id, vehicle_id, start_time, status)
@@ -89,12 +124,18 @@ class MonitoringRepository:
         return MonitoringSession(**dict(row))
 
     def get_active_sessions(self) -> list[MonitoringSession]:
+        """Return all currently genuine ACTIVE monitoring sessions (with end_time IS NULL)."""
         rows = self._conn.execute(
-            "SELECT * FROM monitoring_sessions WHERE status = 'ACTIVE' ORDER BY start_time DESC"
+            """
+            SELECT * FROM monitoring_sessions 
+            WHERE status = 'ACTIVE' AND end_time IS NULL 
+            ORDER BY start_time DESC
+            """
         ).fetchall()
         return [MonitoringSession(**dict(r)) for r in rows]
 
     def end_session(self, session_id: int, status: str = "COMPLETED") -> bool:
+        """Mark a session completed or interrupted and record the end timestamp."""
         now = datetime.now(timezone.utc).isoformat()
         cursor = self._conn.execute(
             """

@@ -155,6 +155,34 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # -----------------------------------------------------------------------
+    # Single ACTIVE Session Invariant & Unique Partial Index:
+    # A driver may have at most ONE monitoring session with status='ACTIVE'.
+    # Clean up any legacy duplicate active sessions (keeping newest per driver)
+    # and create a partial unique index.
+    # -----------------------------------------------------------------------
+    conn.execute(
+        """
+        UPDATE monitoring_sessions
+        SET status = 'INTERRUPTED',
+            end_time = COALESCE(end_time, start_time)
+        WHERE status = 'ACTIVE'
+          AND session_id NOT IN (
+              SELECT MAX(session_id)
+              FROM monitoring_sessions
+              GROUP BY driver_id
+          )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_single_active_session_per_driver
+        ON monitoring_sessions (driver_id)
+        WHERE status = 'ACTIVE'
+        """
+    )
+
     conn.commit()
 
 

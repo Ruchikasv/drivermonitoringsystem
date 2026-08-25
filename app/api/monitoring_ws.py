@@ -112,7 +112,9 @@ class DriverSessionProcessor:
             ear_metrics = compute_eye_mouth_metrics(landmarks_px)
 
             # 2. PERCLOS
-            perclos, blink_trig = self.perclos_tracker.update(ear_metrics["avg_ear"], now=now)
+            perclos_result = self.perclos_tracker.update(ear_metrics["avg_ear"], now=now)
+            perclos = perclos_result["perclos"]
+            blink_trig = perclos_result["blink_triggered"]
 
             # 3. Head Pose
             head_pose = estimate_head_pose(landmarks_px, frame_bgr.shape)
@@ -389,6 +391,22 @@ async def monitor_stream(websocket: WebSocket, session_id: int):
 
         if cap is not None and cap.isOpened():
             cap.release()
+
+        # Mark session as INTERRUPTED if it's still ACTIVE in DB
+        # (handles browser tab close without pressing End Trip)
+        try:
+            cleanup_conn = get_connection()
+            try:
+                cleanup_repo = MonitoringRepository(cleanup_conn)
+                session_record = cleanup_repo.get_session(session_id)
+                if session_record and session_record.status == "ACTIVE":
+                    cleanup_repo.end_session(session_id, status="INTERRUPTED")
+                    cleanup_repo.recalculate_safety_rating(session_record.driver_id)
+                    logger.info("Session %d marked as INTERRUPTED (unexpected disconnect)", session_id)
+            finally:
+                cleanup_conn.close()
+        except Exception as cleanup_err:
+            logger.warning("Failed to mark session %d as interrupted: %s", session_id, cleanup_err)
 
         _active_camera_session = None
         if _camera_lock.locked():

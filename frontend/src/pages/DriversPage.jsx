@@ -32,7 +32,12 @@ export default function DriversPage() {
 
   const filteredDrivers = useMemo(() => {
     return drivers.filter((d) => {
-      const matchesStatus = status === 'ALL' || d.status === status || !d.status;
+      const matchesStatus =
+        status === 'ALL' ||
+        d.status === status ||
+        (status === 'ACTIVE' && d.status === 'ON_ROUTE') ||
+        (status === 'ON_ROUTE' && d.status === 'ACTIVE') ||
+        !d.status;
       const query = search.toLowerCase().trim();
 
       const regNumber = d.vehicle ? d.vehicle.registration_number : (d.vehicle_plate || '');

@@ -30,6 +30,12 @@ export const ALERT_LEVELS = {
 };
 
 export const DRIVER_STATUS = {
+  ON_ROUTE: {
+    id: 'ON_ROUTE',
+    label: 'Active on Route',
+    badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    dotClass: 'bg-emerald-500',
+  },
   ACTIVE: {
     id: 'ACTIVE',
     label: 'Active on Route',
