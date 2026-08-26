@@ -264,3 +264,36 @@ def test_auth_register_fails_with_503_if_model_fails():
         assert res.status_code == 503
         assert "Face recognition service is unavailable" in res.json()["detail"]
 
+
+def test_onnx_execution_providers_configuration():
+    """Verify that FaceDetector configures only supported ONNX execution providers."""
+    from app.face_recognition.detector import FaceDetector
+
+    detector = FaceDetector()
+
+    with patch("onnxruntime.get_available_providers", return_value=["AzureExecutionProvider", "CPUExecutionProvider"]), \
+         patch("insightface.app.FaceAnalysis") as mock_fa:
+        mock_instance = MagicMock()
+        mock_fa.return_value = mock_instance
+
+        detector._ensure_model_loaded()
+
+        # FaceAnalysis must be called with providers=['CPUExecutionProvider'] (NO CUDA requested)
+        mock_fa.assert_called_once()
+        _, kwargs = mock_fa.call_args
+        assert kwargs["providers"] == ["CPUExecutionProvider"]
+
+    # When CUDA IS available, both CUDA and CPU should be passed
+    detector2 = FaceDetector()
+    with patch("onnxruntime.get_available_providers", return_value=["CUDAExecutionProvider", "CPUExecutionProvider"]), \
+         patch("insightface.app.FaceAnalysis") as mock_fa2:
+        mock_instance2 = MagicMock()
+        mock_fa2.return_value = mock_instance2
+
+        detector2._ensure_model_loaded()
+
+        mock_fa2.assert_called_once()
+        _, kwargs2 = mock_fa2.call_args
+        assert kwargs2["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+

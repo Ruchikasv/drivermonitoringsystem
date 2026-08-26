@@ -349,6 +349,18 @@ async def monitor_stream(
             if message.get("type") == "websocket.disconnect":
                 break
 
+            # Drain any backlog messages in the WebSocket buffer to always process the freshest frame
+            while True:
+                try:
+                    next_msg = await asyncio.wait_for(websocket.receive(), timeout=0.0)
+                    if next_msg.get("type") == "websocket.disconnect":
+                        return
+                    message = next_msg
+                except (asyncio.TimeoutError, TimeoutError, asyncio.CancelledError):
+                    break
+                except Exception:
+                    break
+
             frame_bgr = None
             if "bytes" in message and message["bytes"]:
                 # Raw binary frame bytes
@@ -437,7 +449,7 @@ async def monitor_stream(
                 }
 
             # Encode annotated frame as base64 JPEG for WebSocket transport back to UI
-            _, buffer = cv2.imencode(".jpg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+            _, buffer = cv2.imencode(".jpg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
             frame_b64 = base64.b64encode(buffer).decode("utf-8")
 
             # Clean landmarks array from metrics before sending JSON

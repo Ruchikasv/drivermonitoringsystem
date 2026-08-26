@@ -77,22 +77,31 @@ class FaceDetector:
 
         try:
             import insightface
+            import onnxruntime as ort
             from insightface.app import FaceAnalysis
         except ImportError as exc:
             raise ImportError(
-                "InsightFace is not installed.  Run:\n"
+                "InsightFace or ONNX Runtime is not installed.  Run:\n"
                 "  pip install insightface onnxruntime"
             ) from exc
+
+        # Only request execution providers that are actually supported by the environment
+        available_providers = ort.get_available_providers()
+        if "CUDAExecutionProvider" in available_providers:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
 
         self._app = FaceAnalysis(
             name=self._model_name,
             root=self._model_dir,
             allowed_modules=["detection", "recognition"],
+            providers=providers,
         )
         # ctx_id=0 → use first GPU if available; -1 → CPU only.
         # For a laptop prototype, CPU is fine.
         self._app.prepare(ctx_id=-1, det_size=(640, 640))
-        logger.info("InsightFace model loaded successfully.")
+        logger.info("InsightFace model loaded successfully with providers: %s", providers)
 
     # -- Public API -----------------------------------------------------------
 

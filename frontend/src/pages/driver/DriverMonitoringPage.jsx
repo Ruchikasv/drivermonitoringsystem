@@ -58,6 +58,7 @@ export default function DriverMonitoringPage() {
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const captureIntervalRef = useRef(null);
+  const isSendingRef = useRef(false);
   const startTimeRef = useRef(Date.now());
 
   // Web Audio chime generator
@@ -151,9 +152,11 @@ export default function DriverMonitoringPage() {
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play().catch(() => {});
+          setCameraReady(true);
+        };
       }
-      setCameraReady(true);
     } catch (err) {
       console.error('Monitoring webcam error:', err);
       setCameraError('Unable to access monitoring webcam. Please ensure camera permissions are granted.');
@@ -176,25 +179,32 @@ export default function DriverMonitoringPage() {
       setConnected(true);
       console.log('Connected to driver monitoring WebSocket:', sessionId);
 
-      // Start streaming frames to backend at ~14 FPS
+      // Flow-controlled frame transmission to backend (no queue backlog)
       if (captureIntervalRef.current) clearInterval(captureIntervalRef.current);
+      isSendingRef.current = false;
       captureIntervalRef.current = setInterval(() => {
-        if (!videoRef.current || !canvasRef.current || ws.readyState !== WebSocket.OPEN) return;
+        if (!videoRef.current || ws.readyState !== WebSocket.OPEN) return;
+        if (isSendingRef.current || ws.bufferedAmount > 0) return;
         const video = videoRef.current;
-        if (video.videoWidth === 0 || video.videoHeight === 0) return;
+        if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused) return;
 
+        if (!canvasRef.current) {
+          canvasRef.current = document.createElement('canvas');
+        }
         const canvas = canvasRef.current;
         canvas.width = 640;
         canvas.height = 480;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, 640, 480);
 
-        const b64 = canvas.toDataURL('image/jpeg', 0.65);
+        const b64 = canvas.toDataURL('image/jpeg', 0.60);
+        isSendingRef.current = true;
         ws.send(JSON.stringify({ frame: b64 }));
-      }, 70);
+      }, 85);
     };
 
     ws.onmessage = (event) => {
+      isSendingRef.current = false;
       try {
         const data = JSON.parse(event.data);
 
@@ -232,7 +242,12 @@ export default function DriverMonitoringPage() {
       }
     };
 
+    ws.onerror = () => {
+      isSendingRef.current = false;
+    };
+
     ws.onclose = () => {
+      isSendingRef.current = false;
       setConnected(false);
       console.log('WebSocket closed.');
     };
@@ -306,16 +321,6 @@ export default function DriverMonitoringPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 sm:p-6 font-sans select-none">
-      {/* Hidden elements for capturing browser camera frames */}
-      <video
-        ref={videoRef}
-        playsInline
-        autoPlay
-        muted
-        className="hidden"
-      />
-      <canvas ref={canvasRef} className="hidden" />
-
       {/* Top Telemetry Header */}
       <header className="flex items-center justify-between bg-slate-900/80 border border-slate-800/80 rounded-2xl px-5 py-3.5 backdrop-blur">
         <div className="flex items-center gap-3">
@@ -374,6 +379,15 @@ export default function DriverMonitoringPage() {
 
           {/* Camera Frame Container */}
           <div className="relative w-full aspect-[4/3] bg-slate-900 rounded-3xl overflow-hidden border border-slate-800 shadow-2xl flex items-center justify-center">
+            {/* Real-time Hardware-Accelerated Local Camera Video Feed */}
+            <video
+              ref={videoRef}
+              playsInline
+              autoPlay
+              muted
+              className={`w-full h-full object-cover transform -scale-x-100 ${cameraReady ? 'block' : 'hidden'}`}
+            />
+
             {cameraError ? (
               <div className="flex flex-col items-center text-rose-400 text-sm gap-3 p-6 text-center">
                 <AlertTriangle className="w-10 h-10 text-rose-500" />
@@ -385,26 +399,15 @@ export default function DriverMonitoringPage() {
                   Retry Camera Access
                 </button>
               </div>
-            ) : frameB64 ? (
-              <img
-                src={`data:image/jpeg;base64,${frameB64}`}
-                alt="Driver Live Stream"
-                className="w-full h-full object-cover transform -scale-x-100"
-              />
-            ) : cameraReady ? (
+            ) : !cameraReady ? (
               <div className="flex flex-col items-center text-slate-500 text-sm gap-3">
                 <div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-                <span>Processing Live Frames with FYP Engine...</span>
+                <span>Initializing Real-Time Webcam Stream...</span>
               </div>
-            ) : (
-              <div className="flex flex-col items-center text-slate-500 text-sm gap-3">
-                <div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-                <span>Initializing Browser Webcam...</span>
-              </div>
-            )}
+            ) : null}
 
             {/* Active Condition Badges & Face Detection Notice */}
-            <div className="absolute top-4 left-4 flex flex-col gap-2">
+            <div className="absolute top-4 left-4 flex flex-col gap-2 pointer-events-none">
               {metrics.face_detected === false && (
                 <span className="px-3 py-1 bg-amber-500 text-slate-950 font-bold text-xs rounded-lg shadow-lg flex items-center gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5" /> FACE NOT DETECTED
@@ -428,7 +431,7 @@ export default function DriverMonitoringPage() {
             </div>
 
             {/* Subtle Camera HUD Corner markings */}
-            <div className="absolute top-3 right-3 text-[10px] font-mono text-cyan-400/80 bg-slate-950/70 px-2 py-1 rounded-md border border-cyan-500/20">
+            <div className="absolute top-3 right-3 text-[10px] font-mono text-cyan-400/80 bg-slate-950/70 px-2 py-1 rounded-md border border-cyan-500/20 pointer-events-none">
               FACIAL MESH &bull; 478 PTS
             </div>
           </div>
