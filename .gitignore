@@ -29,6 +29,10 @@ desktop.ini
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+data/*.db-shm
+data/*.db-wal
+*.db-shm
+*.db-wal
 
 # === Project: Model weights (large binary files) ===
 models/
