@@ -18,10 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
+import logging
+
 import cv2
 import numpy as np
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def generate_evidence_screenshot(
@@ -176,8 +180,25 @@ def generate_evidence_screenshot(
     # Save to disk
     filename = f"evidence_d{driver_id}_s{session_id}_{file_timestamp}_{event_type}.jpg"
     full_file_path = evidence_dir / filename
-    cv2.imwrite(str(full_file_path), composite, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    write_ok = cv2.imwrite(str(full_file_path), composite, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
 
-    # Relative path from project root
+    # Relative path from project root — MUST match EVIDENCE_DIR relative to PROJECT_ROOT
     rel_path = f"data/evidence/{filename}"
+
+    # Post-write verification logging
+    if write_ok and full_file_path.exists():
+        logger.info(
+            "[EVIDENCE] Screenshot written successfully."
+            " abs_path=%s | rel_path=%s | size_bytes=%d",
+            str(full_file_path),
+            rel_path,
+            full_file_path.stat().st_size,
+        )
+    else:
+        logger.error(
+            "[EVIDENCE] FAILED to write screenshot! abs_path=%s | cv2.imwrite returned %s",
+            str(full_file_path),
+            write_ok,
+        )
+
     return rel_path

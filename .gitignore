@@ -56,6 +56,9 @@ frontend/.env.local
 # === Runtime / generated data ===
 data/evidence/
 data/logs/
+data/test_pg*
 scratch/
 *.mp4
+app/evidence/
+
 

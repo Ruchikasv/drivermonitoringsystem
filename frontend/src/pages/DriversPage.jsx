@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import DriverFilterBar from '../components/drivers/DriverFilterBar';
 import DriverListTable from '../components/drivers/DriverListTable';
 import LoadingState from '../components/common/LoadingState';
@@ -7,11 +8,19 @@ import { driverService } from '../services/driverService';
 import { ShieldCheck } from 'lucide-react';
 
 export default function DriversPage() {
+  const [searchParams] = useSearchParams();
   const [drivers, setDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(searchParams.get('search') || '');
   const [status, setStatus] = useState('ALL');
+
+  useEffect(() => {
+    const q = searchParams.get('search');
+    if (q !== null) {
+      setSearch(q);
+    }
+  }, [searchParams]);
 
   const loadDrivers = async () => {
     try {

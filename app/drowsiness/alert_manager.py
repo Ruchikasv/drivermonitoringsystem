@@ -34,6 +34,11 @@ class AlertManager:
         self._in_critical_state = False
         self._normal_since = time.time()
 
+    @property
+    def in_critical_state(self) -> bool:
+        """Returns True if the engine is currently within an active Level 3 Critical state."""
+        return self._in_critical_state
+
     def _cooldown_ok(self, tier: str, now: float) -> bool:
         return (now - self._last_alert_time[tier]) >= config.ALERT_COOLDOWN_SECONDS
 
@@ -141,8 +146,7 @@ class AlertManager:
         if tier is None:
             # Driver is alert and awake
             if ear >= config.EAR_THRESHOLD and sustained_eye_closure == 0.0:
-                if now - self._normal_since >= 1.5:
-                    self._in_critical_state = False
+                self._in_critical_state = False
             return None
 
         self._normal_since = now
@@ -156,6 +160,7 @@ class AlertManager:
                 return None
             self._in_critical_state = True
         else:
+            self._in_critical_state = False
             if not self._cooldown_ok(tier, now):
                 return None
 

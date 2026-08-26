@@ -214,7 +214,9 @@ export default function AnalyticsPage() {
                 Fleet Benchmark Rating
               </span>
               <p className="mt-1 text-emerald-800">
-                Average fleet safety index is currently <strong className="font-semibold">{metrics?.average_safety_score || 95.0}%</strong> across {metrics?.total_drivers || drivers.length} enrolled commercial drivers.
+                {metrics?.total_drivers === 0 || drivers.length === 0
+                  ? 'No drivers enrolled yet in fleet registry.'
+                  : `Average fleet safety index is currently ${metrics?.average_safety_score}% across ${metrics?.total_drivers || drivers.length} enrolled commercial drivers.`}
               </p>
             </div>
 

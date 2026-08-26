@@ -55,9 +55,28 @@ def get_live_metrics(session_id: int) -> Optional[dict]:
     return LIVE_SESSION_METRICS.get(session_id)
 
 
-def get_all_live_metrics() -> dict[int, dict]:
-    """Retrieve all active session metrics snapshots."""
+def get_all_live_metrics(owner_id: Optional[int] = None) -> dict[int, dict]:
+    """Retrieve active session metrics snapshots, optionally scoped by owner."""
+    if owner_id is not None:
+        return {
+            sid: data for sid, data in LIVE_SESSION_METRICS.items()
+            if data.get("owner_id") == owner_id
+        }
     return LIVE_SESSION_METRICS.copy()
+
+
+def update_live_session_pause_state(session_id: int, is_paused: bool):
+    """Update in-memory live metrics cache to reflect pause/resume state."""
+    if session_id in LIVE_SESSION_METRICS:
+        LIVE_SESSION_METRICS[session_id]["is_paused"] = is_paused
+        LIVE_SESSION_METRICS[session_id]["status"] = "PAUSED" if is_paused else "ACTIVE"
+        if is_paused:
+            LIVE_SESSION_METRICS[session_id]["latest_alert"] = None
+            if "metrics" in LIVE_SESSION_METRICS[session_id]:
+                LIVE_SESSION_METRICS[session_id]["metrics"]["risk_level"] = "PAUSED"
+                LIVE_SESSION_METRICS[session_id]["metrics"]["microsleep_active"] = False
+                LIVE_SESSION_METRICS[session_id]["metrics"]["yawn_active"] = False
+                LIVE_SESSION_METRICS[session_id]["metrics"]["head_nod_active"] = False
 
 
 class DriverSessionProcessor:
@@ -75,6 +94,15 @@ class DriverSessionProcessor:
         self.microsleep_detector = MicrosleepDetector()
         self.yawn_detector = YawnDetector()
         self.head_nod_detector = HeadNodDetector()
+        self.fusion_engine = FusionEngine()
+        self.alert_manager = AlertManager()
+
+    def reset_all_detectors(self):
+        """Reset all sustained condition detectors and alert states to prevent stale alerts on resume."""
+        self.microsleep_detector.reset_condition()
+        self.yawn_detector.reset_condition()
+        self.head_nod_detector.reset_condition()
+        self.perclos_tracker = PerclosTracker()
         self.fusion_engine = FusionEngine()
         self.alert_manager = AlertManager()
 
@@ -119,6 +147,7 @@ class DriverSessionProcessor:
                 "microsleep_active": False,
                 "yawn_active": False,
                 "head_nod_active": False,
+                "critical_active": False,
                 "fusion": {
                     "timestamp": now,
                     "kss_now": 1.0,
@@ -283,6 +312,7 @@ class DriverSessionProcessor:
             "microsleep_active": sustained_closure_s >= 1.5,
             "yawn_active": sustained_yawn_s >= 1.5,
             "head_nod_active": pitch < config.HEAD_NOD_PITCH_THRESHOLD_DEG,
+            "critical_active": bool(self.alert_manager.in_critical_state),
             "fusion": fusion_result,
             "landmarks_px": landmarks_px,
         }
@@ -300,12 +330,14 @@ class DriverSessionProcessor:
 async def monitor_stream(
     websocket: WebSocket,
     session_id: int,
+    token: Optional[str] = None,
     conn=Depends(get_connection),
 ):
     """
     WebSocket streaming endpoint for real-time driver drowsiness monitoring.
     Receives camera frames directly from the browser client, processes them
     through the modular FYP drowsiness pipeline, and returns real-time telemetry.
+    Validates driver session token to prevent unauthorized session access.
     """
     await websocket.accept()
 
@@ -320,7 +352,16 @@ async def monitor_stream(
         await websocket.close(code=4004)
         return
 
-    if session.status != "ACTIVE":
+    # Check session token if assigned
+    if session.session_token:
+        # Check token parameter from query string
+        if not token or token.strip() != session.session_token.strip():
+            logger.warning("Unauthorized WebSocket connection attempt for session %d (invalid/missing token)", session_id)
+            await websocket.send_json({"error": "Unauthorized session token."})
+            await websocket.close(code=4001)
+            return
+
+    if session.status not in ("ACTIVE", "PAUSED"):
         await websocket.send_json({"error": f"Session {session_id} is not active (status: {session.status})."})
         await websocket.close(code=4003)
         return
@@ -341,9 +382,39 @@ async def monitor_stream(
         vehicle_reg=vehicle_reg,
     )
 
+    # Initialize live cache entry
+    LIVE_SESSION_METRICS[session_id] = {
+        "session_id": session_id,
+        "driver_id": session.driver_id,
+        "driver_name": driver_name,
+        "vehicle_registration": vehicle_reg,
+        "owner_id": session.owner_id,
+        "last_update": time.time(),
+        "status": session.status,
+        "is_paused": session.status == "PAUSED",
+        "metrics": {
+            "ear": 0.30,
+            "mar": 0.25,
+            "perclos": 0.0,
+            "head_pitch": 0.0,
+            "head_yaw": 0.0,
+            "head_roll": 0.0,
+            "microsleep_active": False,
+            "yawn_active": False,
+            "head_nod_active": False,
+            "risk_level": "PAUSED" if session.status == "PAUSED" else "NORMAL",
+        },
+        "fusion": {
+            "kss_now": 1.0,
+            "kss_label": "Trip Paused" if session.status == "PAUSED" else "Attentive",
+            "is_critical": False,
+        },
+        "latest_alert": None,
+    }
+
     try:
         while True:
-            # Receive frame data from the browser client
+            # Receive frame data or action commands from the browser client
             message = await websocket.receive()
 
             if message.get("type") == "websocket.disconnect":
@@ -360,6 +431,40 @@ async def monitor_stream(
                     break
                 except Exception:
                     break
+
+            # Check if message is a control command (pause / resume)
+            if "text" in message and message["text"]:
+                raw_text = message["text"].strip()
+                if raw_text.startswith("{"):
+                    try:
+                        payload = json.loads(raw_text)
+                        action = payload.get("action")
+                        if action == "pause":
+                            m_repo.pause_session(session_id)
+                            processor.reset_all_detectors()
+                            update_live_session_pause_state(session_id, is_paused=True)
+                            await websocket.send_json({
+                                "session_id": session_id,
+                                "status": "PAUSED",
+                                "is_paused": True,
+                                "driver_name": driver_name,
+                                "vehicle_registration": vehicle_reg,
+                            })
+                            continue
+                        elif action == "resume":
+                            m_repo.resume_session(session_id)
+                            processor.reset_all_detectors()
+                            update_live_session_pause_state(session_id, is_paused=False)
+                            await websocket.send_json({
+                                "session_id": session_id,
+                                "status": "ACTIVE",
+                                "is_paused": False,
+                                "driver_name": driver_name,
+                                "vehicle_registration": vehicle_reg,
+                            })
+                            continue
+                    except Exception:
+                        pass
 
             frame_bgr = None
             if "bytes" in message and message["bytes"]:
@@ -389,8 +494,102 @@ async def monitor_stream(
             if frame_bgr is None:
                 continue
 
-            # Process frame through full FYP drowsiness engine pipeline
+            # Query current session status from DB to ensure instant synchronization with REST endpoints
+            db_session = m_repo.get_session(session_id)
+            current_status = db_session.status if db_session else "ACTIVE"
+            is_paused = (current_status == "PAUSED")
+
+            if is_paused:
+                # Reset detectors continuously while paused to prevent any stale state leak
+                processor.reset_all_detectors()
+
+                annotated_frame = frame_bgr.copy()
+                cv2.putText(
+                    annotated_frame,
+                    "TRIP PAUSED - MONITORING SUSPENDED",
+                    (15, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 165, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+                metrics_to_send = {
+                    "face_detected": False,
+                    "ear": 0.0,
+                    "mar": 0.0,
+                    "perclos": 0.0,
+                    "pitch": 0.0,
+                    "head_pitch": 0.0,
+                    "yaw": 0.0,
+                    "head_yaw": 0.0,
+                    "roll": 0.0,
+                    "head_roll": 0.0,
+                    "kss": 1.0,
+                    "risk_score": 0.0,
+                    "risk_level": "PAUSED",
+                    "confidence": 1.0,
+                    "contributing_factors": ["Trip is paused — safety monitoring suspended"],
+                    "microsleep_active": False,
+                    "yawn_active": False,
+                    "head_nod_active": False,
+                    "critical_active": False,
+                }
+                fusion_to_send = {
+                    "timestamp": time.time(),
+                    "kss_now": 1.0,
+                    "kss_label": "Trip Paused",
+                    "is_critical": False,
+                    "p_critical_soon": None,
+                    "score_source": "paused",
+                    "raw_signals": {
+                        "avg_perclos": 0.0,
+                        "blink_rate_per_min": 0.0,
+                        "microsleeps_in_window": 0,
+                        "yawns_in_window": 0,
+                        "head_nods_in_window": 0,
+                    },
+                }
+
+                _, buffer = cv2.imencode(".jpg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+                frame_b64 = base64.b64encode(buffer).decode("utf-8")
+
+                ws_message = {
+                    "session_id": session_id,
+                    "status": "PAUSED",
+                    "is_paused": True,
+                    "critical_active": False,
+                    "driver_id": session.driver_id,
+                    "driver_name": driver_name,
+                    "vehicle_registration": vehicle_reg,
+                    "frame_b64": frame_b64,
+                    "metrics": metrics_to_send,
+                    "fusion": fusion_to_send,
+                    "alert": None,
+                }
+
+                LIVE_SESSION_METRICS[session_id] = {
+                    "session_id": session_id,
+                    "status": "PAUSED",
+                    "is_paused": True,
+                    "critical_active": False,
+                    "driver_id": session.driver_id,
+                    "driver_name": driver_name,
+                    "vehicle_registration": vehicle_reg,
+                    "owner_id": session.owner_id,
+                    "last_update": time.time(),
+                    "metrics": metrics_to_send,
+                    "fusion": fusion_to_send,
+                    "latest_alert": None,
+                }
+
+                await websocket.send_json(ws_message)
+                continue
+
+            # When RUNNING: Process frame through full FYP drowsiness engine pipeline
             annotated_frame, metrics, alert = processor.process_frame(frame_bgr)
+            is_critical_active = bool(processor.alert_manager.in_critical_state)
 
             # Handle alert trigger and evidence capture
             alert_payload = None
@@ -421,7 +620,7 @@ async def monitor_stream(
                         trigger_reason=trigger_reason,
                     )
 
-                    # Persist Level 3 critical incident to SQLite
+                    # Persist Level 3 critical incident to database
                     repo = MonitoringRepository(conn)
                     incident_id = repo.create_incident(
                         session_id=session_id,
@@ -435,6 +634,7 @@ async def monitor_stream(
                         perclos=metrics["perclos"],
                         head_pitch_deg=metrics["head_pitch"],
                         evidence_path=evidence_rel_path,
+                        owner_id=session.owner_id,
                     )
 
                 alert_payload = {
@@ -457,6 +657,9 @@ async def monitor_stream(
 
             ws_message = {
                 "session_id": session_id,
+                "status": "ACTIVE",
+                "is_paused": False,
+                "critical_active": is_critical_active,
                 "driver_id": session.driver_id,
                 "driver_name": driver_name,
                 "vehicle_registration": vehicle_reg,
@@ -469,9 +672,13 @@ async def monitor_stream(
             # Update live cache for Owner Portal
             LIVE_SESSION_METRICS[session_id] = {
                 "session_id": session_id,
+                "status": "ACTIVE",
+                "is_paused": False,
+                "critical_active": is_critical_active,
                 "driver_id": session.driver_id,
                 "driver_name": driver_name,
                 "vehicle_registration": vehicle_reg,
+                "owner_id": session.owner_id,
                 "last_update": time.time(),
                 "metrics": metrics_to_send,
                 "fusion": metrics["fusion"],
@@ -493,7 +700,7 @@ async def monitor_stream(
             processor.close()
 
         # Mark session as INTERRUPTED if it's still ACTIVE in DB
-        # (handles browser tab close without pressing End Trip)
+        # (handles browser tab close without pressing End Trip; leaves PAUSED sessions intact)
         try:
             cleanup_repo = MonitoringRepository(conn)
             session_record = cleanup_repo.get_session(session_id)

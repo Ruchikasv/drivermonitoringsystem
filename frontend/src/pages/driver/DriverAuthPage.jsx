@@ -112,8 +112,10 @@ export default function DriverAuthPage() {
         targetAuth.vehicle_id
       );
 
-      // 3. Navigate to monitoring page
-      navigate(`/driver/monitoring?session=${session.session_id}&driver=${targetAuth.driver_id}`);
+      // 3. Navigate to monitoring page with secure session token
+      const token = session.session_token || targetAuth.session_token || '';
+      const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+      navigate(`/driver/monitoring?session=${session.session_id}&driver=${targetAuth.driver_id}${tokenParam}`);
     } catch (err) {
       console.error('Failed to create session:', err);
       setErrorMsg(err.response?.data?.detail || 'Failed to start monitoring session. Try again.');

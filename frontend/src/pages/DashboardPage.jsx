@@ -74,8 +74,8 @@ export default function DashboardPage() {
         />
         <StatCard
           title="Fleet Safety Index"
-          value={`${metrics.fleetSafetyScore}%`}
-          subtitle="Fleet average benchmark"
+          value={metrics.totalDrivers === 0 || metrics.fleetSafetyScore === null ? 'N/A' : `${metrics.fleetSafetyScore}%`}
+          subtitle={metrics.totalDrivers === 0 ? 'No drivers enrolled' : 'Fleet average benchmark'}
           icon={ShieldCheck}
           iconColor="text-emerald-600 bg-emerald-50"
         />

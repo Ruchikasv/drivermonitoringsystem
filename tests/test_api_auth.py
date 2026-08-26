@@ -21,28 +21,34 @@ def client():
     conn.row_factory = sqlite3.Row
     init_db(conn)
 
+    from app.api.dependencies import get_current_owner, get_optional_owner
+    from app.database.owner_repository import OwnerRecord, OwnerRepository
+
+    o_repo = OwnerRepository(conn)
+    owner_id = o_repo.create_owner("Test Owner", "owner@auth.com", "Password123!")
+    test_owner = o_repo.get_owner_by_id(owner_id)
+
     d_repo = DriverRepository(conn)
     # Register a test driver with known embedding
     base_emb = np.zeros(512, dtype=np.float32)
     base_emb[0] = 1.0  # Unit vector pointing along axis 0
-    d_id = d_repo.add_driver(name="Ruchika", embedding=base_emb, license_no="DL-KA-01-9988")
+    d_id = d_repo.add_driver(name="Ruchika", embedding=base_emb, license_no="DL-KA-01-9988", owner_id=owner_id)
 
     v_repo = VehicleRepository(conn)
-    v_id = v_repo.add_vehicle(registration_number="KA-01-MJ-8821", model="Tata Prima 4028.S", vehicle_type="Heavy Haul")
-    v_repo.assign_vehicle(driver_id=d_id, vehicle_id=v_id)
-
-    def _override_get_conn():
-        return conn
+    v_id = v_repo.add_vehicle(registration_number="KA-01-MJ-8821", model="Tata Prima 4028.S", vehicle_type="Heavy Haul", owner_id=owner_id)
+    v_repo.assign_vehicle(driver_id=d_id, vehicle_id=v_id, owner_id=owner_id)
 
     from app.api.auth import _get_db
-    def _override_get_db():
-        yield conn
 
-    app.dependency_overrides[get_connection] = _override_get_conn
-    app.dependency_overrides[_get_db] = _override_get_db
+    app.dependency_overrides[get_connection] = lambda: conn
+    app.dependency_overrides[_get_db] = lambda: conn
+    app.dependency_overrides[get_current_owner] = lambda: test_owner
+    app.dependency_overrides[get_optional_owner] = lambda: test_owner
 
     test_client = TestClient(app)
     yield test_client, base_emb
+
+
 
     app.dependency_overrides.clear()
     conn.close()

@@ -29,6 +29,22 @@ export const monitoringService = {
   },
 
   /**
+   * Pause a running trip.
+   */
+  async pauseSession(sessionId) {
+    const response = await apiClient.post(`/sessions/${sessionId}/pause`);
+    return response.data;
+  },
+
+  /**
+   * Resume a paused trip.
+   */
+  async resumeSession(sessionId) {
+    const response = await apiClient.post(`/sessions/${sessionId}/resume`);
+    return response.data;
+  },
+
+  /**
    * End a monitoring session (driver finished trip).
    */
   async endSession(sessionId) {
@@ -53,11 +69,12 @@ export const monitoringService = {
   },
 
   /**
-   * Get WebSocket URL for driver real-time stream.
+   * Get WebSocket URL for driver real-time stream with optional session token.
    */
-  getWebSocketUrl(sessionId) {
+  getWebSocketUrl(sessionId, token = null) {
     const base = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000')
       .replace(/^http/, 'ws');
-    return `${base}/ws/monitor/${sessionId}`;
+    const url = `${base}/ws/monitor/${sessionId}`;
+    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
   },
 };

@@ -84,7 +84,8 @@ export default function TripsPage() {
             className="text-xs py-2 px-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-700 font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
           >
             <option value="ALL">All Trip Statuses</option>
-            <option value="IN_PROGRESS">In Progress (Active)</option>
+            <option value="RUNNING">In Progress (Active)</option>
+            <option value="PAUSED">Paused (Standby)</option>
             <option value="COMPLETED">Completed</option>
           </select>
         </div>

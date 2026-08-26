@@ -28,11 +28,14 @@ class DriverRecord:
 
     driver_id: int
     name: str
-    face_embedding: np.ndarray
+    face_embedding: Optional[np.ndarray]
     created_at: str
     phone: Optional[str] = None
     email: Optional[str] = None
     license_no: Optional[str] = None
+    owner_id: Optional[int] = None
+    is_active: int = 1
+    deleted_at: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -40,26 +43,32 @@ class DriverRecord:
 # ---------------------------------------------------------------------------
 
 def _serialize_embedding(embedding: np.ndarray) -> bytes:
-    """Convert a numpy embedding to raw bytes for SQLite BLOB storage."""
+    """Convert a numpy embedding to raw bytes for BLOB storage."""
     return embedding.astype(np.float32).tobytes()
 
 
-def _deserialize_embedding(blob: bytes) -> np.ndarray:
-    """Reconstruct a numpy embedding from a SQLite BLOB."""
+def _deserialize_embedding(blob: bytes | None) -> Optional[np.ndarray]:
+    """Reconstruct a numpy embedding from a BLOB."""
+    if blob is None or len(blob) == 0:
+        return None
     return np.frombuffer(blob, dtype=np.float32).copy()
 
 
-def _row_to_driver_record(row: sqlite3.Row) -> DriverRecord:
-    """Safely map a SQLite Row to a DriverRecord."""
-    keys = row.keys()
+def _row_to_driver_record(row: Any) -> DriverRecord:
+    """Safely map a Row/dict to a DriverRecord."""
+    keys = row.keys() if hasattr(row, "keys") else []
+    emb_raw = row["face_embedding"] if "face_embedding" in keys else None
     return DriverRecord(
         driver_id=row["driver_id"],
         name=row["name"],
-        face_embedding=_deserialize_embedding(row["face_embedding"]),
+        face_embedding=_deserialize_embedding(emb_raw),
         created_at=row["created_at"],
         phone=row["phone"] if "phone" in keys else None,
         email=row["email"] if "email" in keys else None,
         license_no=row["license_no"] if "license_no" in keys else None,
+        owner_id=row["owner_id"] if "owner_id" in keys else None,
+        is_active=row["is_active"] if "is_active" in keys else 1,
+        deleted_at=row["deleted_at"] if "deleted_at" in keys else None,
     )
 
 
@@ -69,15 +78,10 @@ def _row_to_driver_record(row: sqlite3.Row) -> DriverRecord:
 
 class DriverRepository:
     """
-    CRUD operations for the ``drivers`` table.
-
-    Parameters
-    ----------
-    conn : sqlite3.Connection
-        An initialised database connection (schema already created).
+    CRUD operations for the ``drivers`` table with owner-level isolation.
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: Any) -> None:
         self._conn = conn
 
     # -- Create ---------------------------------------------------------------
@@ -89,29 +93,9 @@ class DriverRepository:
         phone: Optional[str] = None,
         email: Optional[str] = None,
         license_no: Optional[str] = None,
+        owner_id: Optional[int] = None,
     ) -> int:
-        """
-        Insert a new driver record.
-
-        Parameters
-        ----------
-        name : str
-            Driver's display name.
-        embedding : np.ndarray
-            512-dimensional face embedding (float32, L2-normalised).
-        phone, email, license_no : str, optional
-            Optional profile metadata.
-
-        Returns
-        -------
-        int
-            The auto-generated ``driver_id``.
-
-        Raises
-        ------
-        ValueError
-            If the embedding has an unexpected shape.
-        """
+        """Insert a new driver record for an optional owner."""
         if embedding.shape != (settings.EMBEDDING_DIM,):
             raise ValueError(
                 f"Expected embedding shape ({settings.EMBEDDING_DIM},), "
@@ -120,42 +104,67 @@ class DriverRepository:
 
         created_at = datetime.now(timezone.utc).isoformat()
         cursor = self._conn.execute(
-            "INSERT INTO drivers (name, face_embedding, created_at, phone, email, license_no) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (name, _serialize_embedding(embedding), created_at, phone, email, license_no),
+            """
+            INSERT INTO drivers (name, face_embedding, created_at, phone, email, license_no, owner_id, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (name.strip(), _serialize_embedding(embedding), created_at, phone, email, license_no, owner_id),
         )
         self._conn.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
+        return cursor.lastrowid
 
     # -- Read -----------------------------------------------------------------
 
-    def get_driver_by_id(self, driver_id: int) -> Optional[DriverRecord]:
-        """
-        Fetch a single driver by primary key.
-
-        Returns ``None`` if the driver does not exist.
-        """
-        row = self._conn.execute(
-            "SELECT * FROM drivers WHERE driver_id = ?",
-            (driver_id,),
-        ).fetchone()
+    def get_driver_by_id(self, driver_id: int, owner_id: Optional[int] = None) -> Optional[DriverRecord]:
+        """Fetch a single active driver by primary key, scoped strictly by owner if provided."""
+        if owner_id is not None:
+            row = self._conn.execute(
+                """
+                SELECT * FROM drivers
+                WHERE driver_id = ? AND is_active = 1 AND owner_id = ?
+                """,
+                (driver_id, owner_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM drivers WHERE driver_id = ? AND is_active = 1",
+                (driver_id,),
+            ).fetchone()
 
         if row is None:
             return None
 
         return _row_to_driver_record(row)
 
-    def get_all_drivers(self) -> list[DriverRecord]:
-        """Return all registered drivers."""
-        rows = self._conn.execute(
-            "SELECT * FROM drivers"
-        ).fetchall()
+    def get_all_drivers(self, owner_id: Optional[int] = None) -> list[DriverRecord]:
+        """Return all active registered drivers, strictly filtered by owner if provided."""
+        if owner_id is not None:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM drivers
+                WHERE is_active = 1 AND owner_id = ?
+                ORDER BY driver_id
+                """,
+                (owner_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM drivers WHERE is_active = 1 ORDER BY driver_id"
+            ).fetchall()
 
         return [_row_to_driver_record(row) for row in rows]
 
-    def get_driver_count(self) -> int:
-        """Return the total number of registered drivers."""
-        row = self._conn.execute("SELECT COUNT(*) AS cnt FROM drivers").fetchone()
+    def get_driver_count(self, owner_id: Optional[int] = None) -> int:
+        """Return the total number of active registered drivers for an owner."""
+        if owner_id is not None:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS cnt FROM drivers WHERE is_active = 1 AND owner_id = ?",
+                (owner_id,),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS cnt FROM drivers WHERE is_active = 1"
+            ).fetchone()
         return row["cnt"]
 
     # -- Update Profile -------------------------------------------------------
@@ -167,25 +176,10 @@ class DriverRepository:
         phone: Optional[str] = None,
         email: Optional[str] = None,
         license_no: Optional[str] = None,
+        owner_id: Optional[int] = None,
     ) -> bool:
-        """
-        Update driver profile metadata without touching biometric embeddings.
-
-        Parameters
-        ----------
-        driver_id : int
-            Target driver ID.
-        name : str, optional
-            Updated driver full name.
-        phone, email, license_no : str, optional
-            Updated profile fields.
-
-        Returns
-        -------
-        bool
-            ``True`` if driver existed and was updated, ``False`` otherwise.
-        """
-        existing = self.get_driver_by_id(driver_id)
+        """Update driver profile metadata without touching biometric embeddings."""
+        existing = self.get_driver_by_id(driver_id, owner_id=owner_id)
         if existing is None:
             return False
 
@@ -198,25 +192,56 @@ class DriverRepository:
             """
             UPDATE drivers
             SET name = ?, phone = ?, email = ?, license_no = ?
-            WHERE driver_id = ?
+            WHERE driver_id = ? AND is_active = 1
             """,
             (updated_name, updated_phone, updated_email, updated_license, driver_id),
         )
         self._conn.commit()
         return cursor.rowcount > 0
 
-    # -- Delete ---------------------------------------------------------------
+    # -- Delete & Biometric Eradication ----------------------------------------
 
-    def delete_driver(self, driver_id: int) -> bool:
+    def delete_driver(self, driver_id: int, owner_id: Optional[int] = None) -> bool:
         """
-        Delete a driver by ID and clean up all associated foreign-key records
-        (monitoring sessions, incidents, safety ratings, vehicle assignments)
-        as well as physical screenshot files on disk.
+        Permanently deactivate a driver from the active fleet and permanently erase
+        their biometric face embedding for privacy, while preserving historical audit logs.
         """
         import os
         from app.config import settings
 
-        # 1. Clean up physical evidence screenshot files for this driver's incidents
+        existing = self.get_driver_by_id(driver_id, owner_id=owner_id)
+        if existing is None:
+            return False
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # 1. Unassign any active vehicle
+        try:
+            self._conn.execute(
+                """
+                UPDATE driver_vehicle_assignments
+                SET unassigned_at = ?
+                WHERE driver_id = ? AND unassigned_at IS NULL
+                """,
+                (now, driver_id),
+            )
+        except Exception:
+            pass
+
+        # 2. Interrupt any ongoing active monitoring sessions
+        try:
+            self._conn.execute(
+                """
+                UPDATE monitoring_sessions
+                SET status = 'INTERRUPTED', end_time = ?
+                WHERE driver_id = ? AND status = 'ACTIVE'
+                """,
+                (now, driver_id),
+            )
+        except Exception:
+            pass
+
+        # 3. Clean up physical evidence screenshot files if needed
         try:
             incidents = self._conn.execute(
                 "SELECT evidence_path FROM monitoring_incidents WHERE driver_id = ? AND evidence_path IS NOT NULL",
@@ -234,23 +259,25 @@ class DriverRepository:
         except Exception:
             pass
 
-        # 2. Delete linked table records in correct dependency order
+        # 4. Wipe biometric face_embedding and mark is_active = 0 with deleted_at timestamp
+        cursor = self._conn.execute(
+            """
+            UPDATE drivers
+            SET is_active = 0,
+                face_embedding = NULL,
+                deleted_at = ?
+            WHERE driver_id = ?
+            """,
+            (now, driver_id),
+        )
+
+        # 5. Clean up safety ratings
         try:
-            self._conn.execute(
-                "DELETE FROM monitoring_incidents WHERE driver_id = ? OR session_id IN (SELECT session_id FROM monitoring_sessions WHERE driver_id = ?)",
-                (driver_id, driver_id),
-            )
             self._conn.execute("DELETE FROM driver_safety_ratings WHERE driver_id = ?", (driver_id,))
-            self._conn.execute("DELETE FROM monitoring_sessions WHERE driver_id = ?", (driver_id,))
-            self._conn.execute("DELETE FROM driver_vehicle_assignments WHERE driver_id = ?", (driver_id,))
         except Exception:
             pass
 
-        # 3. Delete driver row
-        cursor = self._conn.execute(
-            "DELETE FROM drivers WHERE driver_id = ?",
-            (driver_id,),
-        )
         self._conn.commit()
         return cursor.rowcount > 0
+
 

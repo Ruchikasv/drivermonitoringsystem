@@ -12,11 +12,19 @@ from app.database.vehicle_repository import VehicleRepository
 from tests.test_database import _random_embedding
 
 
+from app.api.dependencies import get_current_owner
+from app.database.owner_repository import OwnerRecord, OwnerRepository
+
+
 @pytest.fixture
 def api_client(monkeypatch):
     """Yield a TestClient backed by an isolated in-memory database."""
     conn = get_connection(db_path=":memory:")
     init_db(conn)
+
+    o_repo = OwnerRepository(conn)
+    owner_id = o_repo.create_owner("Test Owner", "owner@vehicles.com", "Password123!")
+    test_owner = o_repo.get_owner_by_id(owner_id)
 
     # For safety in API routes that call conn.close(), create a proxy
     class UncloseableConn:
@@ -31,10 +39,12 @@ def api_client(monkeypatch):
     monkeypatch.setattr("app.api.vehicles.get_connection", lambda: uncloseable)
     monkeypatch.setattr("app.api.drivers.get_connection", lambda: uncloseable)
     app.dependency_overrides[get_connection] = lambda: uncloseable
+    app.dependency_overrides[get_current_owner] = lambda: test_owner
 
     client = TestClient(app)
     yield client, conn
     app.dependency_overrides.pop(get_connection, None)
+    app.dependency_overrides.pop(get_current_owner, None)
     conn.close()
 
 
@@ -98,7 +108,7 @@ class TestVehicleAPIEndpoints:
     def test_assign_and_unassign_vehicle_workflow(self, api_client):
         client, conn = api_client
         driver_repo = DriverRepository(conn)
-        d_id = driver_repo.add_driver("Lakshmi", _random_embedding())
+        d_id = driver_repo.add_driver("Lakshmi", _random_embedding(), owner_id=1)
 
         v_res = client.post(
             "/vehicles",

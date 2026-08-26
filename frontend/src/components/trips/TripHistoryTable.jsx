@@ -26,7 +26,8 @@ export default function TripHistoryTable({ trips = [] }) {
           </thead>
           <tbody className="divide-y divide-slate-100">
             {trips.map((trip) => {
-              const isActive = trip.status === 'IN_PROGRESS';
+              const isRunning = trip.status === 'RUNNING' || trip.status === 'IN_PROGRESS';
+              const isPaused = trip.status === 'PAUSED';
               return (
                 <tr key={trip.trip_id} className="hover:bg-slate-50/80 transition-colors">
                   <td className="py-4 px-5">
@@ -35,10 +36,14 @@ export default function TripHistoryTable({ trips = [] }) {
                     </span>
                     <span
                       className={`block text-[10px] font-semibold mt-0.5 ${
-                        isActive ? 'text-blue-600 animate-pulse' : 'text-slate-400'
+                        isRunning
+                          ? 'text-blue-600 animate-pulse'
+                          : isPaused
+                          ? 'text-amber-600 font-bold'
+                          : 'text-slate-400'
                       }`}
                     >
-                      {isActive ? '● IN ROUTE' : 'COMPLETED'}
+                      {isRunning ? '● IN ROUTE' : isPaused ? '⏸ PAUSED' : 'COMPLETED'}
                     </span>
                   </td>
 
@@ -58,16 +63,25 @@ export default function TripHistoryTable({ trips = [] }) {
                     <div className="space-y-0.5">
                       <div>Dep: {formatDateTime(trip.start_time)}</div>
                       <div className="text-slate-400">
-                        Arr: {trip.end_time ? formatDateTime(trip.end_time) : 'En route'}
+                        Arr: {trip.end_time ? formatDateTime(trip.end_time) : isPaused ? 'Paused' : 'En route'}
                       </div>
                     </div>
                   </td>
 
                   <td className="py-4 px-5 font-medium text-slate-700">
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 font-semibold text-slate-800">
                       <Clock className="w-3.5 h-3.5 text-slate-400" />
-                      {formatDuration(trip.duration_minutes)}
+                      {formatDuration(trip.active_duration_minutes !== undefined ? trip.active_duration_minutes : trip.duration_minutes)} active
                     </div>
+                    {trip.total_paused_minutes > 0 ? (
+                      <div className="text-[10px] text-amber-600 font-medium mt-0.5">
+                        Paused: {formatDuration(trip.total_paused_minutes)} (Total: {formatDuration(trip.duration_minutes)})
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-400 font-normal mt-0.5">
+                        Total: {formatDuration(trip.duration_minutes)}
+                      </div>
+                    )}
                   </td>
 
                   <td className="py-4 px-5">

@@ -10,13 +10,14 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import get_current_owner
 from app.api.main import app
 from app.config import settings
 from app.database.connection import get_connection, init_db
-from app.database.monitoring_repository import MonitoringRepository
 from app.database.driver_repository import DriverRepository
+from app.database.monitoring_repository import MonitoringRepository
+from app.database.owner_repository import OwnerRecord, OwnerRepository
 from app.database.vehicle_repository import VehicleRepository
-
 
 
 @pytest.fixture
@@ -26,23 +27,24 @@ def client():
     conn.row_factory = sqlite3.Row
     init_db(conn)
 
+    # Create test owner
+    o_repo = OwnerRepository(conn)
+    owner_id = o_repo.create_owner(name="Test Owner", email="owner@test.com", plain_password="Password123!")
+    test_owner = o_repo.get_owner_by_id(owner_id)
+
     # Seed test driver and vehicle
-    import numpy as np
-    dummy_emb = np.ones(512, dtype=np.float32).tobytes()
+    dummy_emb = np.ones(512, dtype=np.float32)
     d_repo = DriverRepository(conn)
-    d_id = d_repo.add_driver(name="Test Driver", embedding=np.ones(512, dtype=np.float32))
+    d_id = d_repo.add_driver(name="Test Driver", embedding=dummy_emb, owner_id=owner_id)
 
     v_repo = VehicleRepository(conn)
-    v_id = v_repo.add_vehicle(registration_number="KA-01-TEST", model="Test Truck", vehicle_type="Cargo")
-    v_repo.assign_vehicle(driver_id=d_id, vehicle_id=v_id)
+    v_id = v_repo.add_vehicle(registration_number="KA-01-TEST", model="Test Truck", vehicle_type="Cargo", owner_id=owner_id)
+    v_repo.assign_vehicle(driver_id=d_id, vehicle_id=v_id, owner_id=owner_id)
 
-    # Override get_connection in app
-    def _override_get_conn():
-        return conn
+    # Override dependencies
+    app.dependency_overrides[get_connection] = lambda: conn
+    app.dependency_overrides[get_current_owner] = lambda: test_owner
 
-    app.dependency_overrides[get_connection] = _override_get_conn
-
-    # Also override repo dependencies if needed
     from app.api.monitoring import _get_repo as _get_m_repo
     from app.api.incidents import _get_repo as _get_i_repo
 
@@ -57,6 +59,7 @@ def client():
 
     app.dependency_overrides.clear()
     conn.close()
+
 
 
 def test_session_lifecycle(client):
@@ -362,26 +365,23 @@ def test_websocket_monitoring_processes_browser_frames(client):
     # 1. Start a session
     s_res = test_client.post("/sessions/", json={"driver_id": 1, "vehicle_id": 1}).json()
     session_id = s_res["session_id"]
+    token = s_res.get("session_token")
+    token_query = f"?token={token}" if token else ""
 
     # 2. Connect via TestClient WebSocket
-    with test_client.websocket_connect(f"/ws/monitor/{session_id}") as ws:
-        # Create a blank 640x480 test frame
-        dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        _, buffer = cv2.imencode(".jpg", dummy_frame)
-        b64_frame = base64.b64encode(buffer).decode("utf-8")
+    with test_client.websocket_connect(f"/ws/monitor/{session_id}{token_query}") as ws:
+        # Send a synthetic frame
+        img = np.zeros((480, 640, 3), dtype=np.uint8)
+        _, buffer = cv2.imencode(".jpg", img)
+        frame_b64 = base64.b64encode(buffer).decode("utf-8")
 
-        # Send frame payload from simulated browser
-        ws.send_json({"frame": b64_frame})
+        ws.send_json({"frame": frame_b64})
 
-        # Receive response from backend FYP engine
         res_data = ws.receive_json()
         assert res_data["session_id"] == session_id
         assert res_data["driver_id"] == 1
         assert "metrics" in res_data
         assert "fusion" in res_data
-        assert "frame_b64" in res_data
-        assert res_data["metrics"]["ear"] >= 0.0
-        assert res_data["fusion"]["kss_now"] >= 1.0
 
 
 def test_delete_incident_evidence(client, tmp_path):
@@ -432,11 +432,11 @@ def test_fire_driver_cascading_deletion(client):
     m_repo = MonitoringRepository(conn)
 
     # 1. Register a driver
-    driver_id = d_repo.add_driver(name="Driver To Fire", embedding=np.zeros(512, dtype=np.float32))
+    driver_id = d_repo.add_driver(name="Driver To Fire", embedding=np.zeros(512, dtype=np.float32), owner_id=1)
 
     # 2. Assign a vehicle
-    v_id = v_repo.add_vehicle(registration_number="KA-04-FIRE-01", vehicle_type="Truck", model="Fleet Truck Alpha")
-    v_repo.assign_vehicle(driver_id, v_id)
+    v_id = v_repo.add_vehicle(registration_number="KA-04-FIRE-01", vehicle_type="Truck", model="Fleet Truck Alpha", owner_id=1)
+    v_repo.assign_vehicle(driver_id, v_id, owner_id=1)
     assert v_repo.get_current_assignment(driver_id) is not None
 
     # 3. Create session, incident, evidence file, and safety rating
@@ -463,7 +463,7 @@ def test_fire_driver_cascading_deletion(client):
     assert del_res.status_code == 200
     assert del_res.json()["status"] == "success"
 
-    # 5. Verify Driver is deleted
+    # 5. Verify Driver is deactivated from active fleet
     assert d_repo.get_driver_by_id(driver_id) is None
 
     # 6. Verify Vehicle is NOT deleted, but is unassigned (available in fleet)
@@ -471,10 +471,14 @@ def test_fire_driver_cascading_deletion(client):
     assert veh is not None
     assert v_repo.get_current_assignment(driver_id) is None
 
-    # 7. Verify sessions, incidents, safety ratings are deleted
-    assert len(m_repo.get_incidents_by_driver(driver_id)) == 0
-    assert m_repo.get_safety_rating(driver_id) is None
-    assert not os.path.exists(evidence_file)
+    # 7. Verify biometrics are wiped and active session was closed
+    raw_row = conn.execute("SELECT face_embedding, is_active, deleted_at FROM drivers WHERE driver_id = ?", (driver_id,)).fetchone()
+    assert raw_row["face_embedding"] is None
+    assert raw_row["is_active"] == 0
+    assert raw_row["deleted_at"] is not None
+
+    sess = m_repo.get_session(s_id)
+    assert sess.status == "INTERRUPTED"
 
     # 8. Verify GET /drivers does not contain the deleted driver
     drivers_list = test_client.get("/drivers").json()

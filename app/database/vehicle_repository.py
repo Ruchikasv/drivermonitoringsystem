@@ -26,6 +26,8 @@ class VehicleRecord:
     model: str
     vehicle_type: str
     created_at: str
+    owner_id: Optional[int] = None
+    is_active: int = 1
 
 
 @dataclass
@@ -46,15 +48,10 @@ class VehicleAssignment:
 
 class VehicleRepository:
     """
-    CRUD operations for vehicles and driver-vehicle assignments.
-
-    Parameters
-    ----------
-    conn : sqlite3.Connection
-        An initialised database connection.
+    CRUD operations for vehicles and driver-vehicle assignments with owner-level isolation.
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: Any) -> None:
         self._conn = conn
 
     # -- Vehicle creation ----------------------------------------------------
@@ -64,20 +61,9 @@ class VehicleRepository:
         registration_number: str,
         model: str,
         vehicle_type: str,
+        owner_id: Optional[int] = None,
     ) -> int:
-        """
-        Add a vehicle to the fleet.
-
-        Returns
-        -------
-        int
-            The newly created vehicle ID.
-
-        Raises
-        ------
-        ValueError
-            If a vehicle with the same registration number already exists.
-        """
+        """Add a vehicle to the fleet with optional owner association."""
         registration_number = registration_number.strip()
         model = model.strip()
         vehicle_type = vehicle_type.strip()
@@ -93,7 +79,7 @@ class VehicleRepository:
             """
             SELECT vehicle_id
             FROM vehicles
-            WHERE registration_number = ?
+            WHERE LOWER(registration_number) = LOWER(?) AND is_active = 1
             """,
             (registration_number,),
         ).fetchone()
@@ -111,92 +97,148 @@ class VehicleRepository:
                 registration_number,
                 model,
                 vehicle_type,
-                created_at
+                created_at,
+                owner_id,
+                is_active
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 1)
             """,
             (
                 registration_number,
                 model,
                 vehicle_type,
                 created_at,
+                owner_id,
             ),
         )
 
         self._conn.commit()
-
-        return cursor.lastrowid  # type: ignore[return-value]
+        return cursor.lastrowid
 
     # -- Vehicle reads -------------------------------------------------------
 
     def get_vehicle_by_id(
         self,
         vehicle_id: int,
+        owner_id: Optional[int] = None,
     ) -> Optional[VehicleRecord]:
-        """Return a vehicle by ID, or None if it does not exist."""
-
-        row = self._conn.execute(
-            """
-            SELECT *
-            FROM vehicles
-            WHERE vehicle_id = ?
-            """,
-            (vehicle_id,),
-        ).fetchone()
+        """Return a vehicle by ID, scoped strictly by owner if provided."""
+        if owner_id is not None:
+            row = self._conn.execute(
+                """
+                SELECT *
+                FROM vehicles
+                WHERE vehicle_id = ? AND is_active = 1 AND owner_id = ?
+                """,
+                (vehicle_id, owner_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """
+                SELECT *
+                FROM vehicles
+                WHERE vehicle_id = ? AND is_active = 1
+                """,
+                (vehicle_id,),
+            ).fetchone()
 
         if row is None:
             return None
 
+        keys = row.keys() if hasattr(row, "keys") else []
         return VehicleRecord(
             vehicle_id=row["vehicle_id"],
             registration_number=row["registration_number"],
             model=row["model"],
             vehicle_type=row["vehicle_type"],
             created_at=row["created_at"],
+            owner_id=row["owner_id"] if "owner_id" in keys else None,
+            is_active=row["is_active"] if "is_active" in keys else 1,
         )
 
-    def get_all_vehicles(self) -> list[VehicleRecord]:
-        """Return all vehicles in the fleet."""
+    def get_all_vehicles(self, owner_id: Optional[int] = None) -> list[VehicleRecord]:
+        """Return all active vehicles in the fleet, strictly filtered by owner if provided."""
+        if owner_id is not None:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM vehicles
+                WHERE is_active = 1 AND owner_id = ?
+                ORDER BY registration_number
+                """,
+                (owner_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM vehicles
+                WHERE is_active = 1
+                ORDER BY registration_number
+                """
+            ).fetchall()
 
-        rows = self._conn.execute(
-            """
-            SELECT *
-            FROM vehicles
-            ORDER BY registration_number
-            """
-        ).fetchall()
-
-        return [
-            VehicleRecord(
-                vehicle_id=row["vehicle_id"],
-                registration_number=row["registration_number"],
-                model=row["model"],
-                vehicle_type=row["vehicle_type"],
-                created_at=row["created_at"],
+        result = []
+        for row in rows:
+            keys = row.keys() if hasattr(row, "keys") else []
+            result.append(
+                VehicleRecord(
+                    vehicle_id=row["vehicle_id"],
+                    registration_number=row["registration_number"],
+                    model=row["model"],
+                    vehicle_type=row["vehicle_type"],
+                    created_at=row["created_at"],
+                    owner_id=row["owner_id"] if "owner_id" in keys else None,
+                    is_active=row["is_active"] if "is_active" in keys else 1,
+                )
             )
-            for row in rows
-        ]
+        return result
 
-    def get_all_vehicles_with_assignments(self) -> list[dict]:
-        """Return all vehicles in the fleet along with their current active driver assignment."""
-        rows = self._conn.execute(
-            """
-            SELECT 
-                v.vehicle_id,
-                v.registration_number,
-                v.model,
-                v.vehicle_type,
-                v.created_at,
-                a.driver_id AS assigned_driver_id,
-                d.name AS assigned_driver_name
-            FROM vehicles v
-            LEFT JOIN driver_vehicle_assignments a
-                ON v.vehicle_id = a.vehicle_id AND a.unassigned_at IS NULL
-            LEFT JOIN drivers d
-                ON a.driver_id = d.driver_id
-            ORDER BY v.registration_number
-            """
-        ).fetchall()
+    def get_all_vehicles_with_assignments(self, owner_id: Optional[int] = None) -> list[dict]:
+        """Return all active vehicles along with their current driver assignment, strictly scoped by owner."""
+        if owner_id is not None:
+            rows = self._conn.execute(
+                """
+                SELECT 
+                    v.vehicle_id,
+                    v.registration_number,
+                    v.model,
+                    v.vehicle_type,
+                    v.created_at,
+                    v.owner_id,
+                    a.driver_id AS assigned_driver_id,
+                    d.name AS assigned_driver_name
+                FROM vehicles v
+                LEFT JOIN driver_vehicle_assignments a
+                    ON v.vehicle_id = a.vehicle_id AND a.unassigned_at IS NULL
+                LEFT JOIN drivers d
+                    ON a.driver_id = d.driver_id AND d.is_active = 1
+                WHERE v.is_active = 1 AND v.owner_id = ?
+                ORDER BY v.registration_number
+                """,
+                (owner_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT 
+                    v.vehicle_id,
+                    v.registration_number,
+                    v.model,
+                    v.vehicle_type,
+                    v.created_at,
+                    v.owner_id,
+                    a.driver_id AS assigned_driver_id,
+                    d.name AS assigned_driver_name
+                FROM vehicles v
+                LEFT JOIN driver_vehicle_assignments a
+                    ON v.vehicle_id = a.vehicle_id AND a.unassigned_at IS NULL
+                LEFT JOIN drivers d
+                    ON a.driver_id = d.driver_id AND d.is_active = 1
+                WHERE v.is_active = 1
+                ORDER BY v.registration_number
+                """
+            ).fetchall()
 
         result = []
         for row in rows:
@@ -222,8 +264,9 @@ class VehicleRepository:
         registration_number: str,
         model: str,
         vehicle_type: str,
+        owner_id: Optional[int] = None,
     ) -> VehicleRecord:
-        """Update vehicle details."""
+        """Update vehicle details with optional owner check."""
         registration_number = registration_number.strip()
         model = model.strip()
         vehicle_type = vehicle_type.strip()
@@ -235,7 +278,7 @@ class VehicleRepository:
         if not vehicle_type:
             raise ValueError("Vehicle type cannot be empty.")
 
-        existing_v = self.get_vehicle_by_id(vehicle_id)
+        existing_v = self.get_vehicle_by_id(vehicle_id, owner_id=owner_id)
         if existing_v is None:
             raise ValueError(f"Vehicle ID {vehicle_id} does not exist.")
 
@@ -243,7 +286,7 @@ class VehicleRepository:
             """
             SELECT vehicle_id
             FROM vehicles
-            WHERE registration_number = ? AND vehicle_id != ?
+            WHERE LOWER(registration_number) = LOWER(?) AND vehicle_id != ? AND is_active = 1
             """,
             (registration_number, vehicle_id),
         ).fetchone()
@@ -261,21 +304,21 @@ class VehicleRepository:
         )
         self._conn.commit()
 
-        updated = self.get_vehicle_by_id(vehicle_id)
+        updated = self.get_vehicle_by_id(vehicle_id, owner_id=owner_id)
         if updated is None:
             raise ValueError("Updated vehicle not found.")
         return updated
 
-    def delete_vehicle(self, vehicle_id: int) -> bool:
+    def delete_vehicle(self, vehicle_id: int, owner_id: Optional[int] = None) -> bool:
         """
-        Delete a vehicle with full foreign key safety and historical data preservation.
+        Delete a vehicle with full foreign key safety, owner validation, and historical data preservation.
         1. Validates vehicle existence (raises KeyError if not found).
         2. Blocks deletion if vehicle is actively on route in an ACTIVE session (raises ValueError).
         3. Safely closes any active driver assignments.
         4. Nullifies vehicle_id on historical monitoring_sessions and incidents to preserve analytics.
         5. Deletes vehicle assignments and the vehicle row atomically.
         """
-        vehicle = self.get_vehicle_by_id(vehicle_id)
+        vehicle = self.get_vehicle_by_id(vehicle_id, owner_id=owner_id)
         if vehicle is None:
             raise KeyError(f"Vehicle ID {vehicle_id} does not exist.")
 
@@ -326,45 +369,34 @@ class VehicleRepository:
         self,
         driver_id: int,
         vehicle_id: int,
+        owner_id: Optional[int] = None,
     ) -> int:
         """
-        Assign a vehicle to a driver.
-
-        If the vehicle or driver already has an active vehicle assignment,
-        that assignment is closed before the new assignment is created.
-
-        Returns
-        -------
-        int
-            The newly created assignment ID.
-
-        Raises
-        ------
-        ValueError
-            If the driver or vehicle does not exist.
+        Assign a vehicle to a driver with strict owner validation (both must belong to owner).
         """
-
-        driver = self._conn.execute(
-            """
-            SELECT driver_id
-            FROM drivers
-            WHERE driver_id = ?
-            """,
-            (driver_id,),
-        ).fetchone()
+        if owner_id is not None:
+            driver = self._conn.execute(
+                """
+                SELECT driver_id
+                FROM drivers
+                WHERE driver_id = ? AND is_active = 1 AND owner_id = ?
+                """,
+                (driver_id, owner_id),
+            ).fetchone()
+        else:
+            driver = self._conn.execute(
+                """
+                SELECT driver_id
+                FROM drivers
+                WHERE driver_id = ? AND is_active = 1
+                """,
+                (driver_id,),
+            ).fetchone()
 
         if driver is None:
             raise ValueError(f"Driver ID {driver_id} does not exist.")
 
-        vehicle = self._conn.execute(
-            """
-            SELECT vehicle_id
-            FROM vehicles
-            WHERE vehicle_id = ?
-            """,
-            (vehicle_id,),
-        ).fetchone()
-
+        vehicle = self.get_vehicle_by_id(vehicle_id, owner_id=owner_id)
         if vehicle is None:
             raise ValueError(f"Vehicle ID {vehicle_id} does not exist.")
 
@@ -398,14 +430,16 @@ class VehicleRepository:
                 driver_id,
                 vehicle_id,
                 assigned_at,
-                unassigned_at
+                unassigned_at,
+                owner_id
             )
-            VALUES (?, ?, ?, NULL)
+            VALUES (?, ?, ?, NULL, ?)
             """,
             (
                 driver_id,
                 vehicle_id,
                 now,
+                owner_id,
             ),
         )
 
@@ -416,35 +450,62 @@ class VehicleRepository:
     def get_current_assignment(
         self,
         driver_id: int,
+        owner_id: Optional[int] = None,
     ) -> Optional[VehicleAssignment]:
         """
-        Return the driver's currently assigned vehicle.
-
-        Returns None when the driver has no active assignment.
+        Return the driver's currently assigned vehicle, optionally scoped by owner.
+        Returns None when the driver has no active assignment or belongs to another owner.
         """
-
-        row = self._conn.execute(
-            """
-            SELECT
-                a.assignment_id,
-                a.driver_id,
-                a.vehicle_id,
-                a.assigned_at,
-                a.unassigned_at,
-                v.registration_number,
-                v.model,
-                v.vehicle_type,
-                v.created_at AS vehicle_created_at
-            FROM driver_vehicle_assignments a
-            JOIN vehicles v
-                ON v.vehicle_id = a.vehicle_id
-            WHERE a.driver_id = ?
-              AND a.unassigned_at IS NULL
-            ORDER BY a.assigned_at DESC
-            LIMIT 1
-            """,
-            (driver_id,),
-        ).fetchone()
+        if owner_id is not None:
+            row = self._conn.execute(
+                """
+                SELECT
+                    a.assignment_id,
+                    a.driver_id,
+                    a.vehicle_id,
+                    a.assigned_at,
+                    a.unassigned_at,
+                    v.registration_number,
+                    v.model,
+                    v.vehicle_type,
+                    v.created_at AS vehicle_created_at
+                FROM driver_vehicle_assignments a
+                JOIN vehicles v
+                    ON v.vehicle_id = a.vehicle_id
+                JOIN drivers d
+                    ON d.driver_id = a.driver_id
+                WHERE a.driver_id = ?
+                  AND a.unassigned_at IS NULL
+                  AND d.is_active = 1
+                  AND d.owner_id = ?
+                ORDER BY a.assigned_at DESC
+                LIMIT 1
+                """,
+                (driver_id, owner_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """
+                SELECT
+                    a.assignment_id,
+                    a.driver_id,
+                    a.vehicle_id,
+                    a.assigned_at,
+                    a.unassigned_at,
+                    v.registration_number,
+                    v.model,
+                    v.vehicle_type,
+                    v.created_at AS vehicle_created_at
+                FROM driver_vehicle_assignments a
+                JOIN vehicles v
+                    ON v.vehicle_id = a.vehicle_id
+                WHERE a.driver_id = ?
+                  AND a.unassigned_at IS NULL
+                ORDER BY a.assigned_at DESC
+                LIMIT 1
+                """,
+                (driver_id,),
+            ).fetchone()
 
         if row is None:
             return None
@@ -466,12 +527,18 @@ class VehicleRepository:
             vehicle=vehicle,
         )
 
-    def unassign_vehicle(self, driver_id: int) -> bool:
+    def unassign_vehicle(self, driver_id: int, owner_id: Optional[int] = None) -> bool:
         """
-        Remove the driver's current vehicle assignment.
-
+        Remove the driver's current vehicle assignment, validating owner ownership.
         Returns True if an active assignment was closed.
         """
+        if owner_id is not None:
+            driver = self._conn.execute(
+                "SELECT driver_id FROM drivers WHERE driver_id = ? AND is_active = 1 AND owner_id = ?",
+                (driver_id, owner_id),
+            ).fetchone()
+            if driver is None:
+                return False
 
         now = datetime.now(timezone.utc).isoformat()
 

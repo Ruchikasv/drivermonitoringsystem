@@ -22,9 +22,11 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.dependencies import get_optional_owner
 from app.config import settings
 from app.database.connection import get_connection
 from app.database.driver_repository import DriverRepository
+from app.database.owner_repository import OwnerRecord
 from app.face_recognition.comparator import find_best_match, average_embeddings, cosine_similarity
 from app.face_recognition.detector import FaceDetector
 
@@ -32,12 +34,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-def _get_db():
-    conn = get_connection()
-    try:
-        yield conn
-    finally:
-        conn.close()
+def _get_db(conn=Depends(get_connection)):
+    yield conn
 
 # Shared detector singleton and lifecycle state
 _detector: Optional[FaceDetector] = None
@@ -126,6 +124,8 @@ class AuthenticateResponse(BaseModel):
     driver_id: int
     name: str
     similarity: float
+    session_id: Optional[int] = None
+    session_token: Optional[str] = None
     vehicle_id: Optional[int]
     vehicle_registration: Optional[str]
     vehicle_model: Optional[str]
@@ -138,7 +138,11 @@ class AuthenticateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
-def register_driver(body: RegisterRequest, conn=Depends(_get_db)):
+def register_driver(
+    body: RegisterRequest,
+    conn=Depends(_get_db),
+    current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
+):
     """
     Register a new driver.
 
@@ -155,16 +159,23 @@ def register_driver(body: RegisterRequest, conn=Depends(_get_db)):
     logger.info("[AUTH REGISTER] face samples received: %d frames", len(body.frames_b64))
 
     repo = DriverRepository(conn)
+    owner_id = current_owner.owner_id if current_owner else None
 
-    # 1. Check duplicate license number if provided
+    # 1. Check duplicate license number if provided (tenant-scoped)
     if body.license_no and body.license_no.strip():
         lic = body.license_no.strip()
-        existing_by_lic = conn.execute(
-            "SELECT * FROM drivers WHERE LOWER(license_no) = LOWER(?)",
-            (lic,)
-        ).fetchone()
+        if owner_id is not None:
+            existing_by_lic = conn.execute(
+                "SELECT * FROM drivers WHERE LOWER(license_no) = LOWER(?) AND is_active = 1 AND owner_id = ?",
+                (lic, owner_id)
+            ).fetchone()
+        else:
+            existing_by_lic = conn.execute(
+                "SELECT * FROM drivers WHERE LOWER(license_no) = LOWER(?) AND is_active = 1",
+                (lic,)
+            ).fetchone()
         if existing_by_lic:
-            logger.warning("[AUTH REGISTER] duplicate license_no '%s' matches driver_id %s", lic, existing_by_lic["driver_id"])
+            logger.warning("[AUTH REGISTER] duplicate license_no '%s' matches driver_id %s for owner %s", lic, existing_by_lic["driver_id"], owner_id)
             raise HTTPException(
                 status_code=409,
                 detail=f"Driving license '{lic}' is already registered to driver '{existing_by_lic['name']}' (ID #{existing_by_lic['driver_id']}).",
@@ -200,28 +211,29 @@ def register_driver(body: RegisterRequest, conn=Depends(_get_db)):
     avg_emb = average_embeddings(embeddings)
     logger.info("[AUTH REGISTER] face embedding generated")
 
-    # 5. Check duplicate face biometrics against all registered drivers
-    all_drivers = repo.get_all_drivers()
-    for existing in all_drivers:
+    # 5. Check duplicate face biometrics against registered drivers belonging ONLY to the current owner
+    owner_drivers = repo.get_all_drivers(owner_id=owner_id)
+    for existing in owner_drivers:
         sim = cosine_similarity(avg_emb, existing.face_embedding)
         if sim >= settings.DUPLICATE_DETECTION_THRESHOLD:
             logger.warning(
-                "[AUTH REGISTER] duplicate biometrics detected: matches driver '%s' (ID %d) with similarity %.3f",
-                existing.name, existing.driver_id, sim
+                "[AUTH REGISTER] duplicate biometrics detected for owner %s: matches driver '%s' (ID %d) with similarity %.3f",
+                owner_id, existing.name, existing.driver_id, sim
             )
             raise HTTPException(
                 status_code=409,
                 detail=f"Driver '{existing.name}' (ID #{existing.driver_id}) is already registered with matching facial biometrics (similarity: {sim:.2f}).",
             )
 
-    # 6. Database insert
-    logger.info("[AUTH REGISTER] database insert started")
+    # 6. Database insert scoped to owner if logged in
+    logger.info("[AUTH REGISTER] database insert started for owner %s", owner_id)
     driver_id = repo.add_driver(
         name=body.name.strip(),
         embedding=avg_emb,
         phone=body.phone.strip() if body.phone else None,
         email=body.email.strip() if body.email else None,
         license_no=body.license_no.strip() if body.license_no else None,
+        owner_id=owner_id,
     )
     logger.info("[AUTH REGISTER] database insert completed")
 
@@ -242,7 +254,7 @@ def authenticate_driver(body: AuthenticateRequest, conn=Depends(_get_db)):
 
     Extracts an ArcFace embedding from the frame and compares it against all
     stored drivers.  Returns the best match above threshold with the driver's
-    current vehicle assignment.
+    current vehicle assignment and initiates an active monitoring session token.
     """
     frame = _decode_frame(body.frame_b64)
     detector = _get_detector()
@@ -277,8 +289,13 @@ def authenticate_driver(body: AuthenticateRequest, conn=Depends(_get_db)):
 
     # Fetch the driver's current vehicle assignment
     from app.database.vehicle_repository import VehicleRepository
+    from app.database.monitoring_repository import MonitoringRepository
+
+    matched_driver = repo.get_driver_by_id(driver_id)
+    driver_owner_id = matched_driver.owner_id if matched_driver else None
+
     v_repo = VehicleRepository(conn)
-    assignment = v_repo.get_current_assignment(driver_id)
+    assignment = v_repo.get_current_assignment(driver_id, owner_id=driver_owner_id)
 
     vehicle_id = None
     vehicle_registration = None
@@ -286,17 +303,25 @@ def authenticate_driver(body: AuthenticateRequest, conn=Depends(_get_db)):
     vehicle_type = None
 
     if assignment:
-        vehicle = v_repo.get_vehicle_by_id(assignment.vehicle_id)
+        vehicle = v_repo.get_vehicle_by_id(assignment.vehicle_id, owner_id=driver_owner_id)
         if vehicle:
             vehicle_id = vehicle.vehicle_id
             vehicle_registration = vehicle.registration_number
             vehicle_model = vehicle.model
             vehicle_type = vehicle.vehicle_type
 
+    # Start or retrieve active monitoring session with session_token
+    m_repo = MonitoringRepository(conn)
+    session_id = m_repo.create_session(driver_id=driver_id, vehicle_id=vehicle_id, owner_id=driver_owner_id)
+    session_rec = m_repo.get_session(session_id, owner_id=driver_owner_id)
+    session_token = session_rec.session_token if session_rec else None
+
     return AuthenticateResponse(
         driver_id=driver_id,
         name=name,
         similarity=round(float(similarity), 4),
+        session_id=session_id,
+        session_token=session_token,
         vehicle_id=vehicle_id,
         vehicle_registration=vehicle_registration,
         vehicle_model=vehicle_model,

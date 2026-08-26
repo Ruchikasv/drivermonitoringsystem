@@ -427,3 +427,435 @@ class TestAlertManager:
         assert alert_new is not None
         assert alert_new["tier"] == "critical"
 
+
+class TestAlertStateTransitionsAndRecovery:
+    def test_full_escalation_and_recovery_lifecycle(self, tmp_path):
+        log_file = tmp_path / "test_lifecycle.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # 1. State: SAFE (Attentive Driver, EAR=0.30, MAR=0.25, KSS=1.5)
+        safe_eval = mgr.evaluate({
+            "timestamp": 10.0,
+            "face_detected": True,
+            "kss_now": 1.5,
+            "ear": 0.30,
+            "mar": 0.25,
+            "pitch": -2.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.02, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+        })
+        assert safe_eval is None
+
+        # 2. State: Normal Blink (< 0.35s) -> Must remain SAFE
+        blink_eval = mgr.evaluate({
+            "timestamp": 10.3,
+            "face_detected": True,
+            "kss_now": 1.5,
+            "ear": 0.12,
+            "mar": 0.25,
+            "pitch": -2.0,
+            "sustained_eye_closure_seconds": 0.25,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.04, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+        })
+        assert blink_eval is None
+
+        # 3. State: Eyes close for 1.6s -> Escalation to LEVEL 1 (Nudge)
+        mgr._last_alert_time["nudge"] = 0.0
+        l1_eval = mgr.evaluate({
+            "timestamp": 20.0,
+            "face_detected": True,
+            "kss_now": 5.5,
+            "ear": 0.14,
+            "mar": 0.25,
+            "pitch": -2.0,
+            "sustained_eye_closure_seconds": 1.6,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.18, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+        })
+        assert l1_eval is not None
+        assert l1_eval["tier"] == "nudge"
+
+        # 4. State: Eyes close for 2.0s -> Escalation to LEVEL 2 (Warning)
+        mgr._last_alert_time["warning"] = 0.0
+        l2_eval = mgr.evaluate({
+            "timestamp": 30.0,
+            "face_detected": True,
+            "kss_now": 6.8,
+            "ear": 0.12,
+            "mar": 0.25,
+            "pitch": -5.0,
+            "sustained_eye_closure_seconds": 2.0,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.24, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+        })
+        assert l2_eval is not None
+        assert l2_eval["tier"] == "warning"
+
+        # 5. State: Eyes close for 2.6s + Microsleep -> Escalation to LEVEL 3 (Critical)
+        mgr._last_alert_time["critical"] = 0.0
+        l3_eval = mgr.evaluate({
+            "timestamp": 40.0,
+            "face_detected": True,
+            "kss_now": 8.5,
+            "ear": 0.10,
+            "mar": 0.25,
+            "pitch": -16.0,
+            "sustained_eye_closure_seconds": 2.6,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 1.5,
+            "raw_signals": {"avg_perclos": 0.45, "microsleeps_in_window": 1, "yawns_in_window": 0, "head_nods_in_window": 1},
+        })
+        assert l3_eval is not None
+        assert l3_eval["tier"] == "critical"
+
+        # 6. Recovery: Driver opens eyes, sits up, metrics normalize
+        # Immediate next frame of recovery
+        rec_eval_1 = mgr.evaluate({
+            "timestamp": 45.0,
+            "face_detected": True,
+            "kss_now": 4.0,
+            "ear": 0.32,
+            "mar": 0.25,
+            "pitch": -1.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.12, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+        })
+        assert rec_eval_1 is None
+
+        # Sustained recovery -> fully SAFE
+        rec_eval_2 = mgr.evaluate({
+            "timestamp": 50.0,
+            "face_detected": True,
+            "kss_now": 2.0,
+            "ear": 0.32,
+            "mar": 0.25,
+            "pitch": -1.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.03, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+        })
+        assert rec_eval_2 is None
+
+    def test_yawn_and_head_nod_alert_triggers(self, tmp_path):
+        log_file = tmp_path / "test_yawn_nod.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # Sustained yawn alone (MAR > 0.55 for 1.6s) -> Level 1 Nudge
+        mgr._last_alert_time["nudge"] = 0.0
+        yawn_nudge = mgr.evaluate({
+            "timestamp": 100.0,
+            "face_detected": True,
+            "kss_now": 5.2,
+            "ear": 0.28,
+            "mar": 0.65,
+            "pitch": -2.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "sustained_yawn_seconds": 1.6,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.05, "microsleeps_in_window": 0, "yawns_in_window": 1, "head_nods_in_window": 0},
+        })
+        assert yawn_nudge is not None
+        assert yawn_nudge["tier"] == "nudge"
+        assert "yawn" in yawn_nudge["reason"].lower()
+
+        # Frequent yawns in window with elevated KSS (>=2 yawns, KSS >= 6.0) -> Level 2 Warning
+        mgr._last_alert_time["warning"] = 0.0
+        yawn_warn = mgr.evaluate({
+            "timestamp": 110.0,
+            "face_detected": True,
+            "kss_now": 6.2,
+            "ear": 0.28,
+            "mar": 0.25,
+            "pitch": -2.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.05, "microsleeps_in_window": 0, "yawns_in_window": 2, "head_nods_in_window": 0},
+        })
+        assert yawn_warn is not None
+        assert yawn_warn["tier"] == "warning"
+        assert "yawning" in yawn_warn["reason"].lower()
+
+        # Head nod alone (Pitch < -15 deg for 1.6s) -> Level 2 Warning
+        mgr._last_alert_time["warning"] = 0.0
+        nod_alert = mgr.evaluate({
+            "timestamp": 120.0,
+            "face_detected": True,
+            "kss_now": 6.5,
+            "ear": 0.28,
+            "mar": 0.25,
+            "pitch": -18.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 1.6,
+            "raw_signals": {"avg_perclos": 0.05, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 1},
+        })
+        assert nod_alert is not None
+        assert nod_alert["tier"] == "warning"
+        assert "head nod" in nod_alert["reason"].lower()
+
+
+# ===========================================================================
+# NEW TESTS: Precise Alert Thresholds, Cooldown, Recovery & Multi-Signal
+# ===========================================================================
+
+
+def _awake_signals(timestamp):
+    """A standard fully awake driver fusion result for baseline tests."""
+    return {
+        "timestamp": timestamp,
+        "face_detected": True,
+        "kss_now": 1.5,
+        "ear": 0.30,
+        "mar": 0.25,
+        "pitch": -2.0,
+        "sustained_eye_closure_seconds": 0.0,
+        "sustained_yawn_seconds": 0.0,
+        "sustained_nod_seconds": 0.0,
+        "raw_signals": {
+            "avg_perclos": 0.03,
+            "microsleeps_in_window": 0,
+            "yawns_in_window": 0,
+            "head_nods_in_window": 0,
+        },
+    }
+
+
+class TestAlertThresholdsPrecise:
+    """Verify exact boundary conditions for each alert tier."""
+
+    def test_safe_normal_open_eyes_no_alert(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        for t in [10.0, 10.1, 10.2]:
+            assert mgr.evaluate(_awake_signals(t)) is None
+
+    def test_natural_blink_under_1_5s_no_alert(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        for closure_s in [0.15, 0.25, 0.35, 0.8, 1.0, 1.4]:
+            sig = {**_awake_signals(100.0 + closure_s), "ear": 0.12,
+                   "sustained_eye_closure_seconds": closure_s,
+                   "raw_signals": {"avg_perclos": 0.05, "microsleeps_in_window": 0,
+                                   "yawns_in_window": 0, "head_nods_in_window": 0}}
+            assert mgr.evaluate(sig) is None, f"{closure_s}s closure should not alert"
+
+    def test_prolonged_closure_1_5s_triggers_nudge(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["nudge"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 5.0, "ear": 0.14,
+                               "sustained_eye_closure_seconds": 1.5,
+                               "raw_signals": {"avg_perclos": 0.10, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "nudge"
+
+    def test_yawn_1_5s_triggers_nudge(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["nudge"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 5.2, "ear": 0.28,
+                               "mar": 0.65, "sustained_yawn_seconds": 1.5,
+                               "raw_signals": {"avg_perclos": 0.05, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 1, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "nudge"
+        assert "yawn" in alert["reason"].lower()
+
+    def test_perclos_15_pct_kss_5_triggers_nudge(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["nudge"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 5.1, "ear": 0.28,
+                               "sustained_eye_closure_seconds": 0.0,
+                               "raw_signals": {"avg_perclos": 0.15, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "nudge"
+
+    def test_closure_1_8s_triggers_warning(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["warning"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 6.2, "ear": 0.14,
+                               "sustained_eye_closure_seconds": 1.8,
+                               "raw_signals": {"avg_perclos": 0.18, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "warning"
+
+    def test_head_nod_1_5s_triggers_warning(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["warning"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 6.5, "pitch": -18.0,
+                               "sustained_nod_seconds": 1.5,
+                               "raw_signals": {"avg_perclos": 0.10, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 0, "head_nods_in_window": 1}})
+        assert alert is not None and alert["tier"] == "warning"
+        assert "head nod" in alert["reason"].lower()
+
+    def test_two_yawns_kss_6_triggers_warning(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["warning"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 6.1, "ear": 0.28,
+                               "sustained_eye_closure_seconds": 0.0,
+                               "raw_signals": {"avg_perclos": 0.10, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 2, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "warning"
+
+    def test_closure_2_5s_triggers_critical(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["critical"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 7.5, "ear": 0.12,
+                               "sustained_eye_closure_seconds": 2.5,
+                               "raw_signals": {"avg_perclos": 0.30, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "critical"
+        assert "Prolonged eye closure" in alert["reason"]
+
+    def test_multi_signal_closure_plus_head_nod_triggers_critical(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["critical"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 7.0, "ear": 0.14,
+                               "pitch": -18.0, "sustained_eye_closure_seconds": 1.6,
+                               "sustained_nod_seconds": 1.2,
+                               "raw_signals": {"avg_perclos": 0.20, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 0, "head_nods_in_window": 1}})
+        assert alert is not None and alert["tier"] == "critical"
+        assert "Multi-signal" in alert["reason"]
+
+    def test_multi_signal_closure_plus_yawn_triggers_critical(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["critical"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 7.2, "ear": 0.14,
+                               "mar": 0.65, "pitch": -5.0,
+                               "sustained_eye_closure_seconds": 1.6,
+                               "sustained_yawn_seconds": 1.5,
+                               "raw_signals": {"avg_perclos": 0.20, "microsleeps_in_window": 0,
+                                               "yawns_in_window": 1, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "critical"
+        assert "Multi-signal" in alert["reason"]
+
+    def test_repeated_microsleeps_high_perclos_triggers_critical(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["critical"] = 0.0
+        alert = mgr.evaluate({**_awake_signals(100.0), "kss_now": 7.6, "ear": 0.18,
+                               "sustained_eye_closure_seconds": 1.0,
+                               "raw_signals": {"avg_perclos": 0.36, "microsleeps_in_window": 2,
+                                               "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert alert is not None and alert["tier"] == "critical"
+
+
+class TestAlertCooldownAndDebounce:
+    """Verify per-tier cooldown prevents audio/visual spam."""
+
+    def test_nudge_within_cooldown_suppressed(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        payload = {**_awake_signals(100.0), "kss_now": 5.5, "ear": 0.14,
+                   "sustained_eye_closure_seconds": 1.6,
+                   "raw_signals": {"avg_perclos": 0.16, "microsleeps_in_window": 0,
+                                   "yawns_in_window": 0, "head_nods_in_window": 0}}
+        assert mgr.evaluate(payload) is not None
+        payload["timestamp"] = 100.1
+        assert mgr.evaluate(payload) is None, "Duplicate nudge within cooldown must be None"
+
+    def test_warning_within_cooldown_suppressed(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        payload = {**_awake_signals(100.0), "kss_now": 6.5, "ear": 0.13,
+                   "sustained_eye_closure_seconds": 2.0,
+                   "raw_signals": {"avg_perclos": 0.22, "microsleeps_in_window": 0,
+                                   "yawns_in_window": 0, "head_nods_in_window": 0}}
+        assert mgr.evaluate(payload) is not None
+        payload["timestamp"] = 100.5
+        assert mgr.evaluate(payload) is None
+
+    def test_critical_in_state_no_duplicate(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        payload = {**_awake_signals(100.0), "kss_now": 8.5, "ear": 0.12,
+                   "sustained_eye_closure_seconds": 2.7,
+                   "raw_signals": {"avg_perclos": 0.40, "microsleeps_in_window": 1,
+                                   "yawns_in_window": 0, "head_nods_in_window": 0}}
+        assert mgr.evaluate(payload)["tier"] == "critical"
+        for dt in [0.1, 0.5, 1.0, 2.0]:
+            payload["timestamp"] = 100.0 + dt
+            assert mgr.evaluate(payload) is None, f"Frame at +{dt}s must be suppressed"
+
+    def test_cooldown_expires_new_alert_fires(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["nudge"] = 0.0
+        payload = {**_awake_signals(100.0), "kss_now": 5.5, "ear": 0.14,
+                   "sustained_eye_closure_seconds": 1.6,
+                   "raw_signals": {"avg_perclos": 0.16, "microsleeps_in_window": 0,
+                                   "yawns_in_window": 0, "head_nods_in_window": 0}}
+        assert mgr.evaluate(payload)["tier"] == "nudge"
+        mgr._last_alert_time["nudge"] = 90.0  # 9s before t=99 -> cooldown ok
+        payload["timestamp"] = 99.0
+        alert2 = mgr.evaluate(payload)
+        assert alert2 is not None and alert2["tier"] == "nudge"
+
+
+class TestAlertRecoveryTransitions:
+    """Verify recovery from each alert level back to SAFE."""
+
+    def test_l1_to_safe_recovery(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["nudge"] = 0.0
+        assert mgr.evaluate({**_awake_signals(100.0), "kss_now": 5.5, "ear": 0.14,
+                              "sustained_eye_closure_seconds": 1.6,
+                              "raw_signals": {"avg_perclos": 0.16, "microsleeps_in_window": 0,
+                                              "yawns_in_window": 0, "head_nods_in_window": 0}})["tier"] == "nudge"
+        for t in [102.0, 103.5, 105.0]:
+            assert mgr.evaluate(_awake_signals(t)) is None
+
+    def test_l2_to_safe_recovery(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["warning"] = 0.0
+        assert mgr.evaluate({**_awake_signals(100.0), "kss_now": 6.8, "ear": 0.13,
+                              "sustained_eye_closure_seconds": 2.0,
+                              "raw_signals": {"avg_perclos": 0.22, "microsleeps_in_window": 0,
+                                              "yawns_in_window": 0, "head_nods_in_window": 0}})["tier"] == "warning"
+        for t in [103.0, 105.0, 110.0]:
+            assert mgr.evaluate(_awake_signals(t)) is None
+
+    def test_l3_to_safe_clears_in_critical_state(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "i.jsonl"))
+        mgr._last_alert_time["critical"] = 0.0
+        assert mgr.evaluate({**_awake_signals(100.0), "kss_now": 8.5, "ear": 0.12,
+                              "sustained_eye_closure_seconds": 2.7,
+                              "raw_signals": {"avg_perclos": 0.40, "microsleeps_in_window": 1,
+                                              "yawns_in_window": 0, "head_nods_in_window": 0}})["tier"] == "critical"
+        assert mgr._in_critical_state is True
+        for t in [102.0, 104.0]:
+            rec_payload = {**_awake_signals(t), "ear": 0.32, "sustained_eye_closure_seconds": 0.0,
+                           "raw_signals": {"avg_perclos": 0.03, "microsleeps_in_window": 0,
+                                           "yawns_in_window": 0, "head_nods_in_window": 0}}
+            mgr.evaluate(rec_payload)
+        assert mgr._in_critical_state is False
+
+    def test_full_safe_l1_l2_l3_safe_lifecycle(self, tmp_path):
+        mgr = AlertManager(log_path=str(tmp_path / "lifecycle.jsonl"))
+        assert mgr.evaluate(_awake_signals(10.0)) is None
+        mgr._last_alert_time["nudge"] = 0.0
+        l1 = mgr.evaluate({**_awake_signals(20.0), "kss_now": 5.5, "ear": 0.14,
+                            "sustained_eye_closure_seconds": 1.6,
+                            "raw_signals": {"avg_perclos": 0.16, "microsleeps_in_window": 0,
+                                            "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert l1 is not None and l1["tier"] == "nudge"
+        mgr._last_alert_time["warning"] = 0.0
+        l2 = mgr.evaluate({**_awake_signals(30.0), "kss_now": 6.8, "ear": 0.13,
+                            "sustained_eye_closure_seconds": 2.0,
+                            "raw_signals": {"avg_perclos": 0.22, "microsleeps_in_window": 0,
+                                            "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert l2 is not None and l2["tier"] == "warning"
+        mgr._last_alert_time["critical"] = 0.0
+        l3 = mgr.evaluate({**_awake_signals(40.0), "kss_now": 8.5, "ear": 0.12,
+                            "sustained_eye_closure_seconds": 2.7,
+                            "raw_signals": {"avg_perclos": 0.40, "microsleeps_in_window": 1,
+                                            "yawns_in_window": 0, "head_nods_in_window": 0}})
+        assert l3 is not None and l3["tier"] == "critical"
+        for t in [45.0, 47.0, 50.0]:
+            assert mgr.evaluate({**_awake_signals(t), "ear": 0.32,
+                                  "sustained_eye_closure_seconds": 0.0,
+                                  "raw_signals": {"avg_perclos": 0.03, "microsleeps_in_window": 0,
+                                                  "yawns_in_window": 0, "head_nods_in_window": 0}}) is None
+        assert mgr._in_critical_state is False

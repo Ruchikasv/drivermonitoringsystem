@@ -1,9 +1,11 @@
-import React from 'react';
-import { useLocation } from 'react-router-dom';
-import { Search, Bell, Shield, User } from 'lucide-react';
+import React, { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Search, Bell, Shield, User, LogOut } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 
 const PAGE_TITLES = {
   '/': { title: 'Fleet Overview', subtitle: 'Real-time driver activity, fatigue trends & alert tracking' },
+  '/dashboard': { title: 'Fleet Overview', subtitle: 'Real-time driver activity, fatigue trends & alert tracking' },
   '/drivers': { title: 'Driver Management', subtitle: 'Registered commercial driver directory & performance scores' },
   '/live-monitoring': { title: 'Live Vehicle Stream', subtitle: 'Computer vision telemetry & in-cabin sensor monitoring' },
   '/trips': { title: 'Trip History Logs', subtitle: 'Commercial transport routes, durations, and safety logs' },
@@ -14,6 +16,9 @@ const PAGE_TITLES = {
 
 export default function Header() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { owner, logout } = useAuth();
+
   const currentPath = location.pathname.startsWith('/drivers/') && location.pathname !== '/drivers'
     ? '/drivers'
     : location.pathname;
@@ -21,6 +26,28 @@ export default function Header() {
   const pageInfo = PAGE_TITLES[currentPath] || {
     title: 'Fleet Safety Management',
     subtitle: 'Commercial Vehicle Driver Monitoring System',
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/owner/login');
+  };
+
+  const initials = owner?.name
+    ? owner.name
+        .split(' ')
+        .map((n) => n[0])
+        .slice(0, 2)
+        .join('')
+        .toUpperCase()
+    : 'FM';
+
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const handleSearchKeyDown = (e) => {
+    if (e.key === 'Enter' && searchQuery.trim()) {
+      navigate(`/drivers?search=${encodeURIComponent(searchQuery.trim())}`);
+    }
   };
 
   return (
@@ -38,6 +65,9 @@ export default function Header() {
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
             placeholder="Search driver, vehicle or trip…"
             className="w-64 pl-9 pr-4 py-1.5 text-xs rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
           />
@@ -58,22 +88,31 @@ export default function Header() {
         {/* Vertical Divider */}
         <div className="h-6 w-px bg-slate-200" />
 
-        {/* Fleet Manager Profile */}
+        {/* Fleet Manager Profile & Logout */}
         <div className="flex items-center gap-3 pl-1">
-          <div className="w-8 h-8 rounded-full bg-slate-900 text-white flex items-center justify-center text-xs font-semibold shadow-sm">
-            FM
+          <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-semibold shadow-sm">
+            {initials}
           </div>
           <div className="hidden lg:block text-left">
             <span className="text-xs font-semibold text-slate-800 block leading-tight">
-              Fleet Manager
+              {owner?.name || 'Fleet Manager'}
             </span>
             <span className="text-[10px] text-slate-500 flex items-center gap-1">
-              <Shield className="w-2.5 h-2.5 text-blue-600" />
-              Safety Operations
+              <Shield className="w-2.5 h-2.5 text-indigo-600" />
+              {owner?.email || 'Safety Operations'}
             </span>
           </div>
+
+          <button
+            onClick={handleLogout}
+            title="Sign Out"
+            className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors ml-1"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </header>
   );
 }
+

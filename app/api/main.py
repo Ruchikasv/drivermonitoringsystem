@@ -15,24 +15,30 @@ from app.api.drivers import router as drivers_router
 from app.api.vehicles import router as vehicles_router
 from app.api import auth as auth_module
 from app.api.auth import router as auth_router
+from app.api.owner_auth import router as owner_auth_router
 from app.api.monitoring import router as monitoring_router
 from app.api.incidents import router as incidents_router
 from app.api.monitoring_ws import router as ws_router
 from app.api.trips import router as trips_router
 from app.api.alerts import router as alerts_router
 from app.api.analytics_api import router as analytics_router
+from app.config import settings, validate_security_config
 from app.database.connection import get_connection, init_db, seed_default_data
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialise the SQLite database and preload models on startup."""
+    """Initialise security config, database, and preload models on startup."""
+    # 1. Enforce security rules & environment checks
+    validate_security_config()
+
+    # 2. Database initialisation & migration
     conn = get_connection()
     init_db(conn)
     seed_default_data(conn)
     conn.close()
 
-    # Preload face recognition model before serving requests
+    # 3. Preload face recognition model before serving requests
     auth_module.warmup_detector()
     yield
 
@@ -48,19 +54,32 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# CORS — allow the Vite dev server and any LAN client
+# CORS — allow Vite dev server, frontend origin, and credentials for cookies
 # ---------------------------------------------------------------------------
+cors_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+if settings.CORS_ORIGINS:
+    for o in settings.CORS_ORIGINS.split(","):
+        clean_o = o.strip()
+        if clean_o and clean_o not in cors_origins:
+            cors_origins.append(clean_o)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---------------------------------------------------------------------------
-# Phase 1 & Auth routers
+# Authentication & Resource Routers
 # ---------------------------------------------------------------------------
+app.include_router(owner_auth_router)
 app.include_router(drivers_router)
 app.include_router(vehicles_router)
 app.include_router(auth_router)

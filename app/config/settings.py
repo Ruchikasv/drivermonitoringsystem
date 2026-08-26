@@ -85,7 +85,49 @@ FATIGUE_LSTM_PATH: Path = MODEL_DIR / "fatigue_lstm_weights.pt"
 FACE_LANDMARKER_PATH: Path = MODEL_DIR / "face_landmarker.task"
 
 # Directory where drowsiness evidence screenshots are stored.
-EVIDENCE_DIR: Path = DATA_DIR / "evidence"
+# MUST match the relative prefix returned by generate_evidence_screenshot()
+# which returns 'data/evidence/{filename}' — so this must be PROJECT_ROOT/data/evidence.
+EVIDENCE_DIR: Path = PROJECT_ROOT / "data" / "evidence"
 
 # Target camera FPS for the monitoring WebSocket loop.
 MONITORING_FPS: int = int(os.getenv("DMS_MONITORING_FPS", "15"))
+
+# ---------------------------------------------------------------------------
+# Environment, Database, & Deployment Configuration (Step 2)
+# ---------------------------------------------------------------------------
+
+# Environment mode: 'development', 'production', or 'test'
+ENVIRONMENT: str = os.getenv("DMS_ENVIRONMENT", os.getenv("ENVIRONMENT", "development")).lower()
+
+# Database connection URL:
+# For SQLite (default development): sqlite:///data/drivers.db
+# For PostgreSQL (production): postgresql+psycopg://user:password@host:5432/dms_db
+DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{DATABASE_PATH.as_posix()}")
+
+# ---------------------------------------------------------------------------
+# Owner Authentication & Security (Step 2)
+# ---------------------------------------------------------------------------
+
+JWT_ALGORITHM: str = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))  # 24 hours
+COOKIE_NAME: str = "dms_owner_token"
+COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").lower() in ("true", "1")
+COOKIE_SAMESITE: str = os.getenv("COOKIE_SAMESITE", "lax")
+
+_DEV_FALLBACK_SECRET = "dev-insecure-secret-key-change-in-production-09823471"
+JWT_SECRET: str = os.getenv("JWT_SECRET", _DEV_FALLBACK_SECRET if ENVIRONMENT != "production" else "")
+CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "")
+
+
+
+def validate_security_config() -> None:
+    """Validate critical security configurations on backend startup."""
+    if ENVIRONMENT == "production":
+        if not JWT_SECRET or JWT_SECRET == _DEV_FALLBACK_SECRET:
+            raise RuntimeError(
+                "[SECURITY ERROR] In production mode (ENVIRONMENT=production), "
+                "a secure JWT_SECRET environment variable MUST be explicitly set."
+            )
+        if DATABASE_URL.startswith("sqlite"):
+            # Warn or enforce production database
+            pass

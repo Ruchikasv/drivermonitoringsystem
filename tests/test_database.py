@@ -338,3 +338,116 @@ class TestVehicleRepository:
     def test_delete_nonexistent_vehicle_raises_key_error(self, vehicle_repo):
         with pytest.raises(KeyError, match="does not exist"):
             vehicle_repo.delete_vehicle(99999)
+
+
+class TestPersistenceAcrossRestarts:
+    """Regression tests verifying deleted drivers and vehicles never resurrect across restarts."""
+
+    def test_driver_deletion_persists_across_restart(self, tmp_path):
+        from app.database.connection import get_connection, init_db, seed_default_data
+
+        db_file = tmp_path / "test_persistence.db"
+        # 1. Initial startup
+        conn = get_connection(db_file)
+        init_db(conn)
+        seed_default_data(conn)
+        repo = DriverRepository(conn)
+
+        initial_count = repo.get_driver_count()
+        drivers = repo.get_all_drivers()
+        assert initial_count > 0
+        target_driver = drivers[0]
+
+        # 2. Fire/delete driver
+        assert repo.delete_driver(target_driver.driver_id) is True
+        assert repo.get_driver_by_id(target_driver.driver_id) is None
+        assert repo.get_driver_count() == initial_count - 1
+        conn.close()
+
+        # 3. Simulate backend restart
+        conn2 = get_connection(db_file)
+        init_db(conn2)
+        seed_default_data(conn2)
+        repo2 = DriverRepository(conn2)
+
+        # 4. Verify driver did NOT resurrect
+        assert repo2.get_driver_by_id(target_driver.driver_id) is None
+        assert repo2.get_driver_count() == initial_count - 1
+        all_names = {d.name for d in repo2.get_all_drivers()}
+        assert target_driver.name not in all_names
+        conn2.close()
+
+    def test_vehicle_deletion_persists_across_restart(self, tmp_path):
+        from app.database.connection import get_connection, init_db, seed_default_data
+
+        db_file = tmp_path / "test_persistence_v.db"
+        # 1. Initial startup
+        conn = get_connection(db_file)
+        init_db(conn)
+        seed_default_data(conn)
+        v_repo = VehicleRepository(conn)
+
+        vehicles = v_repo.get_all_vehicles()
+        assert len(vehicles) > 0
+        target_v = vehicles[0]
+
+        # 2. Delete vehicle
+        assert v_repo.delete_vehicle(target_v.vehicle_id) is True
+        assert v_repo.get_vehicle_by_id(target_v.vehicle_id) is None
+        conn.close()
+
+        # 3. Simulate backend restart
+        conn2 = get_connection(db_file)
+        init_db(conn2)
+        seed_default_data(conn2)
+        v_repo2 = VehicleRepository(conn2)
+
+        # 4. Verify vehicle did NOT resurrect
+        assert v_repo2.get_vehicle_by_id(target_v.vehicle_id) is None
+        all_regs = {v.registration_number for v in v_repo2.get_all_vehicles()}
+        assert target_v.registration_number not in all_regs
+        conn2.close()
+
+    def test_all_records_deleted_never_reseed_on_restart(self, tmp_path):
+        from app.database.connection import get_connection, init_db, seed_default_data
+
+        db_file = tmp_path / "test_empty_reseed.db"
+        conn = get_connection(db_file)
+        init_db(conn)
+        seed_default_data(conn)
+        d_repo = DriverRepository(conn)
+        v_repo = VehicleRepository(conn)
+
+        # Delete all drivers
+        for d in d_repo.get_all_drivers():
+            d_repo.delete_driver(d.driver_id)
+        # Delete all vehicles
+        for v in v_repo.get_all_vehicles():
+            v_repo.delete_vehicle(v.vehicle_id)
+
+        assert d_repo.get_driver_count() == 0
+        assert len(v_repo.get_all_vehicles()) == 0
+        conn.close()
+
+        # Simulate restart with empty tables
+        conn2 = get_connection(db_file)
+        init_db(conn2)
+        seed_default_data(conn2)
+        d_repo2 = DriverRepository(conn2)
+        v_repo2 = VehicleRepository(conn2)
+
+        # Confirm default data was NOT re-seeded
+        assert d_repo2.get_driver_count() == 0
+        assert len(d_repo2.get_all_drivers()) == 0
+        assert len(v_repo2.get_all_vehicles()) == 0
+        conn2.close()
+
+    def test_deleted_driver_cannot_be_assigned(self, db_conn, repo, vehicle_repo):
+        driver_id = repo.add_driver("DriverToFire", _random_embedding())
+        v_id = vehicle_repo.add_vehicle("KA-01-ASSIGN-TEST", "ModelX", "Cargo")
+
+        assert repo.delete_driver(driver_id) is True
+
+        # Attempt to assign vehicle to deleted/inactive driver
+        with pytest.raises(ValueError, match="does not exist"):
+            vehicle_repo.assign_vehicle(driver_id, v_id)

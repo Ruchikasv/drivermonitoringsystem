@@ -7,6 +7,8 @@ import {
   Volume2,
   VolumeX,
   StopCircle,
+  Pause,
+  Play,
   Eye,
   Smile,
   Activity,
@@ -15,6 +17,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { monitoringService } from '../../services/monitoringService';
+import { soundManager } from '../../utils/soundManager';
 
 export default function DriverMonitoringPage() {
   const [searchParams] = useSearchParams();
@@ -28,6 +31,7 @@ export default function DriverMonitoringPage() {
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState(null);
   const [driverInfo, setDriverInfo] = useState({ name: 'Driver', vehicle: 'Commercial Vehicle' });
+  const [isPaused, setIsPaused] = useState(false);
   const [metrics, setMetrics] = useState({
     ear: 0.30,
     mar: 0.25,
@@ -51,9 +55,9 @@ export default function DriverMonitoringPage() {
   const [tripSummary, setTripSummary] = useState(null);
   const [showEndModal, setShowEndModal] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [pausing, setPausing] = useState(false);
 
   const wsRef = useRef(null);
-  const audioCtxRef = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -61,66 +65,12 @@ export default function DriverMonitoringPage() {
   const isSendingRef = useRef(false);
   const startTimeRef = useRef(Date.now());
 
-  // Web Audio chime generator
-  const playAlertSound = (tier) => {
-    // Attempt haptic vibration if supported by device/browser
-    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-      try {
-        if (tier === 'critical') {
-          navigator.vibrate([200, 100, 200, 100, 400]);
-        } else if (tier === 'warning') {
-          navigator.vibrate([150, 100, 150]);
-        } else {
-          navigator.vibrate(100);
-        }
-      } catch {
-        // Graceful fallback: vibration not supported or permission denied on desktop
-      }
-    }
-
-    if (!audioEnabled) return;
-    try {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      const ctx = audioCtxRef.current;
-      if (ctx.state === 'suspended') {
-        ctx.resume();
-      }
-
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      if (tier === 'critical') {
-        // High alert emergency siren
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.5);
-        gain.gain.setValueAtTime(0.4, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.8);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.8);
-      } else if (tier === 'warning') {
-        // Noticeably longer BEEEEEP
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(580, ctx.currentTime);
-        gain.gain.setValueAtTime(0.25, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.45);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.45);
-      } else {
-        // Short, simple caution beep
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(520, ctx.currentTime);
-        gain.gain.setValueAtTime(0.18, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.18);
-        osc.start();
-        osc.stop(ctx.currentTime + 0.18);
-      }
-    } catch (e) {
-      console.warn('Audio playback error:', e);
+  const handleAudioToggle = () => {
+    const nextState = !audioEnabled;
+    setAudioEnabled(nextState);
+    soundManager.setEnabled(nextState);
+    if (nextState) {
+      soundManager.unlockAudio();
     }
   };
 
@@ -169,9 +119,27 @@ export default function DriverMonitoringPage() {
       return;
     }
 
+    const checkInitialStatus = async () => {
+      try {
+        const sess = await monitoringService.getSession(sessionId);
+        if (sess) {
+          if (sess.status === 'PAUSED') {
+            setIsPaused(true);
+          } else if (sess.status === 'COMPLETED' || sess.status === 'INTERRUPTED') {
+            navigate('/driver');
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('Error checking session status:', e);
+      }
+    };
+    checkInitialStatus();
+
     startWebcam();
 
-    const wsUrl = monitoringService.getWebSocketUrl(sessionId);
+    const token = searchParams.get('token');
+    const wsUrl = monitoringService.getWebSocketUrl(sessionId, token);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -214,6 +182,14 @@ export default function DriverMonitoringPage() {
           return;
         }
 
+        if (data.status === 'PAUSED' || data.is_paused === true) {
+          setIsPaused(true);
+          setCurrentAlert(null);
+          soundManager.stop();
+        } else if (data.status === 'ACTIVE' || data.is_paused === false) {
+          setIsPaused(false);
+        }
+
         if (data.driver_name) {
           setDriverInfo({
             name: data.driver_name,
@@ -233,9 +209,30 @@ export default function DriverMonitoringPage() {
           setFusion(data.fusion);
         }
 
-        if (data.alert) {
+        const isCriticalActive = Boolean(data.critical_active) && !data.is_paused;
+
+        if (isCriticalActive) {
+          soundManager.playAlert("critical");
+        } else {
+          // If critical is no longer active, ensure critical siren is stopped
+          if (soundManager.isCriticalPlaying) {
+            soundManager.stopCriticalSiren();
+          }
+
+          // Handle one-shot warning / nudge alerts if present
+          if (data.alert && !data.is_paused) {
+            if (data.alert.tier === "warning") {
+              soundManager.playAlert("warning");
+            } else if (data.alert.tier === "nudge") {
+              soundManager.playAlert("nudge");
+            }
+          }
+        }
+
+        if (data.alert && !data.is_paused) {
           setCurrentAlert(data.alert);
-          playAlertSound(data.alert.tier);
+        } else if (!isCriticalActive) {
+          setCurrentAlert(null);
         }
       } catch (err) {
         console.error('WebSocket message parsing error:', err);
@@ -254,18 +251,52 @@ export default function DriverMonitoringPage() {
 
     return () => {
       stopWebcam();
+      soundManager.stop();
       if (ws.readyState === WebSocket.OPEN) {
         ws.close();
-      }
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close().catch(() => {});
       }
     };
   }, [sessionId]);
 
+  const handlePauseTrip = async () => {
+    setPausing(true);
+    try {
+      soundManager.stop();
+      setCurrentAlert(null);
+      await monitoringService.pauseSession(sessionId);
+      setIsPaused(true);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ action: 'pause' }));
+      }
+    } catch (err) {
+      console.error('Error pausing session:', err);
+    } finally {
+      setPausing(false);
+    }
+  };
+
+  const handleResumeTrip = async () => {
+    setPausing(true);
+    try {
+      soundManager.unlockAudio();
+      soundManager.stop();
+      setCurrentAlert(null);
+      await monitoringService.resumeSession(sessionId);
+      setIsPaused(false);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ action: 'resume' }));
+      }
+    } catch (err) {
+      console.error('Error resuming session:', err);
+    } finally {
+      setPausing(false);
+    }
+  };
+
   const handleEndTrip = async () => {
     setEnding(true);
     try {
+      soundManager.stop();
       stopWebcam();
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close();
@@ -291,17 +322,21 @@ export default function DriverMonitoringPage() {
     }
   };
 
-  // Status computation matching Requirements 5 & 6
-  const isCritical = fusion.is_critical || currentAlert?.tier === 'critical' || metrics.microsleep_active;
-  const isWarning = !isCritical && (fusion.kss_now >= 6.0 || currentAlert?.tier === 'warning' || metrics.yawn_active);
-  const isNudge = !isCritical && !isWarning && (fusion.kss_now >= 4.5 || currentAlert?.tier === 'nudge' || metrics.perclos >= 0.20);
+  const isCritical = !isPaused && (fusion.is_critical || currentAlert?.tier === 'critical' || metrics.microsleep_active);
+  const isWarning = !isPaused && !isCritical && (fusion.kss_now >= 6.0 || currentAlert?.tier === 'warning' || metrics.yawn_active);
+  const isNudge = !isPaused && !isCritical && !isWarning && (fusion.kss_now >= 4.5 || currentAlert?.tier === 'nudge' || metrics.perclos >= 0.20);
 
   let statusBg = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400';
   let statusTitle = 'SAFE & ATTENTIVE';
   let statusSubtitle = 'No active hazard detected';
   let statusIcon = <ShieldCheck className="w-5 h-5 text-emerald-400" />;
 
-  if (isCritical) {
+  if (isPaused) {
+    statusBg = 'bg-amber-500/20 border-amber-500/50 text-amber-300';
+    statusTitle = 'TRIP PAUSED';
+    statusSubtitle = 'Drowsiness monitoring & alert sounds suspended';
+    statusIcon = <Pause className="w-5 h-5 text-amber-400" />;
+  } else if (isCritical) {
     statusBg = 'bg-rose-500/20 border-rose-500/50 text-rose-400 animate-pulse';
     statusTitle = 'LEVEL 3 — CRITICAL DROWSINESS';
     statusSubtitle = 'IMMEDIATE ATTENTION REQUIRED';
@@ -324,23 +359,46 @@ export default function DriverMonitoringPage() {
       {/* Top Telemetry Header */}
       <header className="flex items-center justify-between bg-slate-900/80 border border-slate-800/80 rounded-2xl px-5 py-3.5 backdrop-blur">
         <div className="flex items-center gap-3">
-          <div className={`w-3 h-3 rounded-full ${connected ? 'bg-emerald-400 shadow-lg shadow-emerald-500/50 animate-pulse' : 'bg-rose-500'}`} />
+          <div className={`w-3 h-3 rounded-full ${
+            !connected ? 'bg-rose-500' : isPaused ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 shadow-lg shadow-emerald-500/50 animate-pulse'
+          }`} />
           <div>
             <div className="text-sm font-bold text-white flex items-center gap-2">
               <span>{driverInfo.name}</span>
               <span className="text-xs px-2 py-0.5 bg-slate-800 text-slate-300 rounded-md font-mono">
                 {driverInfo.vehicle}
               </span>
+              {isPaused && (
+                <span className="text-xs px-2.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-md font-bold uppercase tracking-wider">
+                  PAUSED
+                </span>
+              )}
             </div>
             <div className="text-[11px] text-slate-400">
-              Session #{sessionId} &bull; {connected ? 'Live Active Stream' : 'Connecting to FYP Engine...'}
+              Session #{sessionId} &bull; {connected ? (isPaused ? 'Trip Paused (Suspended)' : 'Live Active Stream') : 'Connecting to FYP Engine...'}
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Temporary Manual Verification Button for Level 3 Siren */}
           <button
-            onClick={() => setAudioEnabled(!audioEnabled)}
+            onClick={() => {
+              if (soundManager.isCriticalPlaying) {
+                soundManager.stopCriticalSiren();
+              } else {
+                soundManager.unlockAudio();
+                soundManager.playAlert('critical');
+              }
+            }}
+            className="px-3.5 py-2 text-xs font-extrabold rounded-xl border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 transition active:scale-95 shadow-sm"
+            title="Development verification helper: toggles continuous Level 3 critical siren"
+          >
+            🚨 Test Critical Siren
+          </button>
+
+          <button
+            onClick={handleAudioToggle}
             className={`p-2.5 rounded-xl border transition ${
               audioEnabled ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' : 'bg-slate-800 border-slate-700 text-slate-500'
             }`}
@@ -348,6 +406,24 @@ export default function DriverMonitoringPage() {
           >
             {audioEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
           </button>
+
+          {isPaused ? (
+            <button
+              disabled={pausing}
+              onClick={handleResumeTrip}
+              className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl shadow-lg shadow-emerald-600/20 transition active:scale-95"
+            >
+              <Play className="w-4 h-4 fill-current" /> Resume Trip
+            </button>
+          ) : (
+            <button
+              disabled={pausing}
+              onClick={handlePauseTrip}
+              className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl shadow-lg shadow-amber-600/20 transition active:scale-95"
+            >
+              <Pause className="w-4 h-4 fill-current" /> Pause Trip
+            </button>
+          )}
 
           <button
             onClick={() => setShowEndModal(true)}
@@ -430,9 +506,29 @@ export default function DriverMonitoringPage() {
               )}
             </div>
 
+            {/* Paused Overlay */}
+            {isPaused && (
+              <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center z-10">
+                <div className="p-4 bg-amber-500/20 text-amber-400 rounded-3xl border border-amber-500/40 shadow-xl mb-3 animate-pulse">
+                  <Pause className="w-10 h-10" />
+                </div>
+                <h4 className="text-xl font-extrabold text-white tracking-wide">TRIP PAUSED</h4>
+                <p className="text-xs text-slate-300 max-w-xs mt-1 mb-4">
+                  Drowsiness detection & audio alerts are suspended while parked or resting.
+                </p>
+                <button
+                  disabled={pausing}
+                  onClick={handleResumeTrip}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl shadow-lg transition active:scale-95 text-xs uppercase tracking-wider"
+                >
+                  <Play className="w-4 h-4 fill-current" /> Resume Trip
+                </button>
+              </div>
+            )}
+
             {/* Subtle Camera HUD Corner markings */}
             <div className="absolute top-3 right-3 text-[10px] font-mono text-cyan-400/80 bg-slate-950/70 px-2 py-1 rounded-md border border-cyan-500/20 pointer-events-none">
-              FACIAL MESH &bull; 478 PTS
+              {isPaused ? 'MONITORING SUSPENDED' : 'FACIAL MESH • 478 PTS'}
             </div>
           </div>
         </div>

@@ -9,9 +9,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from app.api.dependencies import get_current_owner
 from app.database.connection import get_connection
 from app.database.driver_repository import DriverRepository
 from app.database.monitoring_repository import MonitoringRepository
+from app.database.owner_repository import OwnerRecord
 from app.database.vehicle_repository import VehicleRepository
 
 router = APIRouter(prefix="/alerts", tags=["Alerts"])
@@ -40,15 +42,19 @@ def list_alerts(
     level: Optional[int] = Query(None),
     search: Optional[str] = Query(None),
     repos=Depends(_get_repos),
+    current_owner: OwnerRecord = Depends(get_current_owner),
 ):
     """List all monitoring incidents as alert records for the frontend."""
     conn, m_repo, d_repo, v_repo = repos
 
-    # Get incidents
+    # Get incidents scoped to owner
     if driver_id and driver_id != "ALL":
-        incidents = m_repo.get_incidents_by_driver(int(driver_id))
+        driver_check = d_repo.get_driver_by_id(int(driver_id), owner_id=current_owner.owner_id)
+        if driver_check is None:
+            return []
+        incidents = m_repo.get_incidents_by_driver(int(driver_id), owner_id=current_owner.owner_id)
     else:
-        incidents = m_repo.get_all_incidents(limit=200)
+        incidents = m_repo.get_all_incidents(owner_id=current_owner.owner_id, limit=200)
 
     alerts = []
     # Cache driver/vehicle lookups
@@ -62,7 +68,7 @@ def list_alerts(
 
         # Lookup driver name (cached)
         if inc.driver_id not in driver_cache:
-            driver = d_repo.get_driver_by_id(inc.driver_id)
+            driver = d_repo.get_driver_by_id(inc.driver_id, owner_id=current_owner.owner_id)
             driver_cache[inc.driver_id] = driver.name if driver else f"Driver #{inc.driver_id}"
         driver_name = driver_cache[inc.driver_id]
 
@@ -70,7 +76,7 @@ def list_alerts(
         vehicle_plate = "Unassigned"
         if inc.vehicle_id:
             if inc.vehicle_id not in vehicle_cache:
-                vehicle = v_repo.get_vehicle_by_id(inc.vehicle_id)
+                vehicle = v_repo.get_vehicle_by_id(inc.vehicle_id, owner_id=current_owner.owner_id)
                 vehicle_cache[inc.vehicle_id] = vehicle.registration_number if vehicle else "Unknown"
             vehicle_plate = vehicle_cache[inc.vehicle_id]
 

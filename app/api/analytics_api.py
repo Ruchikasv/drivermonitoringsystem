@@ -12,9 +12,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from app.api.dependencies import get_current_owner
 from app.database.connection import get_connection
 from app.database.driver_repository import DriverRepository
 from app.database.monitoring_repository import MonitoringRepository
+from app.database.owner_repository import OwnerRecord
 from app.database.vehicle_repository import VehicleRepository
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
@@ -25,28 +27,36 @@ def _get_repos(conn=Depends(get_connection)):
 
 
 @router.get("/metrics")
-def get_fleet_metrics(repos=Depends(_get_repos)) -> dict[str, Any]:
-    """Summary KPI metrics across the fleet."""
+def get_fleet_metrics(
+    repos=Depends(_get_repos),
+    current_owner: OwnerRecord = Depends(get_current_owner),
+) -> dict[str, Any]:
+    """Summary KPI metrics across the owner's fleet."""
     conn, m_repo, d_repo, v_repo = repos
 
-    total_drivers = len(d_repo.get_all_drivers())
-    active_sessions = len(m_repo.get_active_sessions())
+    drivers = d_repo.get_all_drivers(owner_id=current_owner.owner_id)
+    total_drivers = len(drivers)
+    active_sessions = len(m_repo.get_active_sessions(owner_id=current_owner.owner_id, include_paused=False))
     
     # Calculate total incidents and breakdown
-    incidents = m_repo.get_all_incidents(limit=1000)
+    incidents = m_repo.get_all_incidents(owner_id=current_owner.owner_id, limit=1000)
     total_incidents = len(incidents)
     critical_incidents = sum(1 for i in incidents if i.event_type.lower() == "critical")
     warning_incidents = sum(1 for i in incidents if i.event_type.lower() == "warning")
     nudge_incidents = sum(1 for i in incidents if i.event_type.lower() == "nudge")
 
-    # Average fleet safety score
-    ratings = conn.execute(
-        "SELECT safety_score FROM driver_safety_ratings WHERE safety_score IS NOT NULL"
-    ).fetchall()
-    if ratings:
-        avg_score = round(sum(r["safety_score"] for r in ratings) / len(ratings), 1)
+    # Dynamic average fleet safety score computed from all active drivers of current owner
+    if total_drivers > 0:
+        scores = []
+        for d in drivers:
+            rating = m_repo.get_safety_rating(d.driver_id, owner_id=current_owner.owner_id)
+            if rating and rating.safety_score is not None:
+                scores.append(rating.safety_score)
+            else:
+                scores.append(100.0)  # Baseline pristine score for enrolled driver with no recorded infractions
+        avg_score = round(sum(scores) / len(scores), 1)
     else:
-        avg_score = 95.0
+        avg_score = None
 
     return {
         "total_drivers": total_drivers,
@@ -66,37 +76,45 @@ def get_fleet_metrics(repos=Depends(_get_repos)) -> dict[str, Any]:
 
 
 @router.get("/alerts-by-driver")
-def get_alerts_by_driver(repos=Depends(_get_repos)) -> list[dict[str, Any]]:
+def get_alerts_by_driver(
+    repos=Depends(_get_repos),
+    current_owner: OwnerRecord = Depends(get_current_owner),
+) -> list[dict[str, Any]]:
     """Return count of incidents per driver for the bar chart."""
     conn, m_repo, d_repo, v_repo = repos
 
-    drivers = d_repo.get_all_drivers()
+    drivers = d_repo.get_all_drivers(owner_id=current_owner.owner_id)
     result = []
     for d in drivers:
-        d_incidents = m_repo.get_incidents_by_driver(d.driver_id)
+        d_incidents = m_repo.get_incidents_by_driver(d.driver_id, owner_id=current_owner.owner_id)
         result.append({
             "name": d.name,
             "driver_id": d.driver_id,
             "count": len(d_incidents),
         })
 
-    # If no real incidents across drivers, include at least all registered drivers with 0
     return result
 
 
 @router.get("/score-distribution")
-def get_score_distribution(repos=Depends(_get_repos)) -> list[dict[str, Any]]:
+def get_score_distribution(
+    repos=Depends(_get_repos),
+    current_owner: OwnerRecord = Depends(get_current_owner),
+) -> list[dict[str, Any]]:
     """Distribution of driver safety scores across tiers for the Donut chart."""
     conn, m_repo, d_repo, v_repo = repos
 
-    drivers = d_repo.get_all_drivers()
+    drivers = d_repo.get_all_drivers(owner_id=current_owner.owner_id)
+    if not drivers:
+        return []
+
     excellent = 0  # 90-100
     good = 0       # 75-89
     moderate = 0   # 60-74
     critical = 0   # <60
 
     for d in drivers:
-        rating = m_repo.get_safety_rating(d.driver_id)
+        rating = m_repo.get_safety_rating(d.driver_id, owner_id=current_owner.owner_id)
         score = rating.safety_score if rating and rating.safety_score is not None else 100.0
         if score >= 90:
             excellent += 1
@@ -108,7 +126,7 @@ def get_score_distribution(repos=Depends(_get_repos)) -> list[dict[str, Any]]:
             critical += 1
 
     return [
-        {"range": "90-100 (Excellent)", "count": max(1, excellent) if not drivers else excellent, "fill": "#10b981"},
+        {"range": "90-100 (Excellent)", "count": excellent, "fill": "#10b981"},
         {"range": "75-89 (Good)", "count": good, "fill": "#3b82f6"},
         {"range": "60-74 (Moderate)", "count": moderate, "fill": "#f59e0b"},
         {"range": "<60 (Critical)", "count": critical, "fill": "#ef4444"},
@@ -116,11 +134,14 @@ def get_score_distribution(repos=Depends(_get_repos)) -> list[dict[str, Any]]:
 
 
 @router.get("/drowsiness-trend")
-def get_drowsiness_trend(repos=Depends(_get_repos)) -> list[dict[str, Any]]:
+def get_drowsiness_trend(
+    repos=Depends(_get_repos),
+    current_owner: OwnerRecord = Depends(get_current_owner),
+) -> list[dict[str, Any]]:
     """Daily trend of drowsiness incidents over the last 7 days."""
     conn, m_repo, d_repo, v_repo = repos
 
-    incidents = m_repo.get_all_incidents(limit=1000)
+    incidents = m_repo.get_all_incidents(owner_id=current_owner.owner_id, limit=1000)
     
     # Bucket by date
     days_map = {}
@@ -141,3 +162,4 @@ def get_drowsiness_trend(repos=Depends(_get_repos)) -> list[dict[str, Any]]:
             pass
 
     return list(days_map.values())
+
