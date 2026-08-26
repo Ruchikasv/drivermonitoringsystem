@@ -301,10 +301,40 @@ class TestVehicleRepository:
         assert vehicle_repo.delete_vehicle(v_id) is True
         assert vehicle_repo.get_vehicle_by_id(v_id) is None
 
-    def test_delete_assigned_vehicle_is_blocked(self, repo, vehicle_repo):
+    def test_delete_assigned_vehicle_safely_unassigns_and_deletes(self, repo, vehicle_repo):
         driver_id = repo.add_driver("Ruchika", _random_embedding())
         v_id = vehicle_repo.add_vehicle("KA-01-V3", "Model3", "Cargo")
         vehicle_repo.assign_vehicle(driver_id, v_id)
 
-        with pytest.raises(ValueError, match="currently assigned"):
+        # Deleting assigned vehicle safely closes assignment and removes vehicle
+        assert vehicle_repo.delete_vehicle(v_id) is True
+        assert vehicle_repo.get_vehicle_by_id(v_id) is None
+        assert vehicle_repo.get_current_assignment(driver_id) is None
+        # Driver remains intact
+        assert repo.get_driver_by_id(driver_id) is not None
+
+    def test_delete_vehicle_in_active_session_is_blocked(self, db_conn, repo, vehicle_repo):
+        from app.database.monitoring_repository import MonitoringRepository
+        m_repo = MonitoringRepository(db_conn)
+        driver_id = repo.add_driver("ActiveDriver", _random_embedding())
+        v_id = vehicle_repo.add_vehicle("KA-01-ACTIVE", "ModelActive", "Cargo")
+        vehicle_repo.assign_vehicle(driver_id, v_id)
+
+        # Create active monitoring session
+        session_id = m_repo.create_session(driver_id, vehicle_id=v_id)
+
+        # Attempting to delete an active vehicle must raise ValueError
+        with pytest.raises(ValueError, match="currently active on route"):
             vehicle_repo.delete_vehicle(v_id)
+
+        # Vehicle and active session remain untouched
+        assert vehicle_repo.get_vehicle_by_id(v_id) is not None
+
+        # Ending the trip allows deletion
+        m_repo.end_session(session_id, status="COMPLETED")
+        assert vehicle_repo.delete_vehicle(v_id) is True
+        assert vehicle_repo.get_vehicle_by_id(v_id) is None
+
+    def test_delete_nonexistent_vehicle_raises_key_error(self, vehicle_repo):
+        with pytest.raises(KeyError, match="does not exist"):
+            vehicle_repo.delete_vehicle(99999)

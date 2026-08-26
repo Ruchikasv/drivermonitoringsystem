@@ -54,33 +54,29 @@ export default function DashboardPage() {
         <StatCard
           title="Total Registered Drivers"
           value={metrics.totalDrivers}
-          subtitle="Enrolled in local database"
+          subtitle="Enrolled in SQLite database"
           icon={Users}
           iconColor="text-slate-700 bg-slate-100"
         />
         <StatCard
           title="Active on Route"
           value={activeDrivers.length}
-          subtitle="Currently operating vehicles"
+          subtitle="Currently monitored sessions"
           icon={Truck}
           iconColor="text-blue-600 bg-blue-50"
         />
         <StatCard
-          title="Today's Safety Alerts"
+          title="Total Safety Infractions"
           value={metrics.todayAlerts}
-          subtitle="1 Level-3 critical event"
+          subtitle={`${metrics.critical_incidents || 0} Critical • ${metrics.warning_incidents || 0} Warning`}
           icon={AlertTriangle}
-          trend="+1 vs ystd"
-          trendPositive={false}
           iconColor="text-amber-600 bg-amber-50"
         />
         <StatCard
           title="Fleet Safety Index"
           value={`${metrics.fleetSafetyScore}%`}
-          subtitle="Fleet aggregate benchmark"
+          subtitle="Fleet average benchmark"
           icon={ShieldCheck}
-          trend={metrics.scoreDelta}
-          trendPositive={true}
           iconColor="text-emerald-600 bg-emerald-50"
         />
       </div>
@@ -90,16 +86,16 @@ export default function DashboardPage() {
         {/* Drowsiness Trend (2 columns) */}
         <div className="lg:col-span-2">
           <Card
-            title="Circadian Fatigue & Drowsiness Curve (Demo Preview)"
-            subtitle="[DEMO DATA PREVIEW] Synthesized circadian curve — awaiting Phase 2 real-time CV stream"
+            title="7-Day Safety Incident History"
+            subtitle="Daily breakdown of Level 1-3 fatigue alerts recorded across all fleet trips"
           >
             <DrowsinessTrendChart data={drowsinessTrend} />
             <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-              <span className="flex items-center gap-1.5 font-medium text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 text-[11px]">
-                <span className="w-2 h-2 rounded-full bg-amber-500" />
-                Demo Preview — Awaiting Phase 2 Real-Time Monitoring Telemetry
+              <span className="flex items-center gap-1.5 font-medium text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                Live Monitoring Pipeline Active
               </span>
-              <span className="text-[11px] text-slate-400">Telemetry Engine: Standby</span>
+              <span className="text-[11px] text-slate-400">Multi-Modal CV Fusion Telemetry</span>
             </div>
           </Card>
         </div>

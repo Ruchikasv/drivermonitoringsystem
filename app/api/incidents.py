@@ -23,12 +23,8 @@ from app.database.monitoring_repository import MonitoringRepository
 router = APIRouter(prefix="/incidents", tags=["Incidents"])
 
 
-def _get_repo():
-    conn = get_connection()
-    try:
-        yield MonitoringRepository(conn)
-    finally:
-        conn.close()
+def _get_repo(conn=Depends(get_connection)):
+    yield MonitoringRepository(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +138,18 @@ def get_evidence(incident_id: int, repo: MonitoringRepository = Depends(_get_rep
     return FileResponse(full_path, media_type="image/jpeg")
 
 
+@router.delete("/{incident_id}/evidence")
+def delete_evidence(incident_id: int, repo: MonitoringRepository = Depends(_get_repo)):
+    """Delete the physical evidence screenshot file and remove evidence reference from SQLite."""
+    deleted = repo.delete_incident_evidence(incident_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Evidence for incident #{incident_id} not found",
+        )
+    return {"status": "success", "message": f"Evidence for incident #{incident_id} deleted"}
+
+
 @router.get("/{incident_id}", response_model=IncidentResponse)
 def get_incident(incident_id: int, repo: MonitoringRepository = Depends(_get_repo)):
     """Return a single incident by ID."""
@@ -149,3 +157,4 @@ def get_incident(incident_id: int, repo: MonitoringRepository = Depends(_get_rep
     if not incident:
         raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
     return _to_response(incident)
+

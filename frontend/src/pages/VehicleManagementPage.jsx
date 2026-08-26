@@ -328,14 +328,16 @@ export default function VehicleManagementPage() {
   };
 
   const handleDeleteVehicle = async () => {
-    if (!deletingVehicle || deleteErrorMessage) return;
+    if (!deletingVehicle || savingAction) return;
 
+    const vId = deletingVehicle.vehicle_id;
     try {
       setSavingAction(true);
-      await vehicleService.deleteVehicle(deletingVehicle.vehicle_id);
+      await vehicleService.deleteVehicle(vId);
+      setVehicles((prev) => prev.filter((v) => v.vehicle_id !== vId));
       setDeletingVehicle(null);
       showToast('Vehicle deleted successfully.', 'success');
-      fetchData();
+      await fetchData();
     } catch (err) {
       setDeleteErrorMessage(err.response?.data?.detail || err.message || 'Failed to delete vehicle.');
     } finally {

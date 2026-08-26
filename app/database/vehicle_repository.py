@@ -267,37 +267,56 @@ class VehicleRepository:
         return updated
 
     def delete_vehicle(self, vehicle_id: int) -> bool:
-        """Delete a vehicle if it is not currently assigned to any driver."""
+        """
+        Delete a vehicle with full foreign key safety and historical data preservation.
+        1. Validates vehicle existence (raises KeyError if not found).
+        2. Blocks deletion if vehicle is actively on route in an ACTIVE session (raises ValueError).
+        3. Safely closes any active driver assignments.
+        4. Nullifies vehicle_id on historical monitoring_sessions and incidents to preserve analytics.
+        5. Deletes vehicle assignments and the vehicle row atomically.
+        """
         vehicle = self.get_vehicle_by_id(vehicle_id)
         if vehicle is None:
-            raise ValueError(f"Vehicle ID {vehicle_id} does not exist.")
+            raise KeyError(f"Vehicle ID {vehicle_id} does not exist.")
 
-        active_assignment = self._conn.execute(
+        # Check if vehicle is currently in an ACTIVE monitoring session
+        active_session = self._conn.execute(
             """
-            SELECT a.driver_id, d.name
-            FROM driver_vehicle_assignments a
-            LEFT JOIN drivers d ON a.driver_id = d.driver_id
-            WHERE a.vehicle_id = ? AND a.unassigned_at IS NULL
+            SELECT session_id, driver_id
+            FROM monitoring_sessions
+            WHERE vehicle_id = ? AND status = 'ACTIVE' AND end_time IS NULL
             """,
             (vehicle_id,),
         ).fetchone()
 
-        if active_assignment is not None:
-            driver_name = active_assignment["name"] or f"Driver #{active_assignment['driver_id']}"
-            driver_id = active_assignment["driver_id"]
+        if active_session is not None:
             raise ValueError(
-                f"Vehicle {vehicle.registration_number} is currently assigned to {driver_name} (#{driver_id}). Remove the assignment before deleting this vehicle."
+                f"Vehicle {vehicle.registration_number} is currently active on route in Monitoring Session #{active_session['session_id']}. Please end the active trip before deleting the vehicle."
             )
 
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Safely unassign if currently assigned to a driver
         self._conn.execute(
-            "DELETE FROM driver_vehicle_assignments WHERE vehicle_id = ?",
-            (vehicle_id,),
+            """
+            UPDATE driver_vehicle_assignments
+            SET unassigned_at = ?
+            WHERE vehicle_id = ? AND unassigned_at IS NULL
+            """,
+            (now_iso, vehicle_id),
         )
 
-        self._conn.execute(
-            "DELETE FROM vehicles WHERE vehicle_id = ?",
-            (vehicle_id,),
-        )
+        # Nullify foreign key references in monitoring tables so past session/incident analytics remain intact
+        self._conn.execute("UPDATE monitoring_incidents SET vehicle_id = NULL WHERE vehicle_id = ?", (vehicle_id,))
+        self._conn.execute("UPDATE monitoring_sessions SET vehicle_id = NULL WHERE vehicle_id = ?", (vehicle_id,))
+
+        # Delete historical assignment links for this vehicle
+        self._conn.execute("DELETE FROM driver_vehicle_assignments WHERE vehicle_id = ?", (vehicle_id,))
+
+        # Delete vehicle row
+        self._conn.execute("DELETE FROM vehicles WHERE vehicle_id = ?", (vehicle_id,))
+
         self._conn.commit()
         return True
 

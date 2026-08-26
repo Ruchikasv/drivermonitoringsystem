@@ -18,12 +18,8 @@ from app.database.monitoring_repository import MonitoringRepository
 router = APIRouter(prefix="/sessions", tags=["Monitoring Sessions"])
 
 
-def _get_repo():
-    conn = get_connection()
-    try:
-        yield MonitoringRepository(conn)
-    finally:
-        conn.close()
+def _get_repo(conn=Depends(get_connection)):
+    yield MonitoringRepository(conn)
 
 
 # ---------------------------------------------------------------------------

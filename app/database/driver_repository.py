@@ -209,16 +209,48 @@ class DriverRepository:
 
     def delete_driver(self, driver_id: int) -> bool:
         """
-        Delete a driver by ID.
-
-        Returns
-        -------
-        bool
-            ``True`` if a row was deleted, ``False`` if the ID was not found.
+        Delete a driver by ID and clean up all associated foreign-key records
+        (monitoring sessions, incidents, safety ratings, vehicle assignments)
+        as well as physical screenshot files on disk.
         """
+        import os
+        from app.config import settings
+
+        # 1. Clean up physical evidence screenshot files for this driver's incidents
+        try:
+            incidents = self._conn.execute(
+                "SELECT evidence_path FROM monitoring_incidents WHERE driver_id = ? AND evidence_path IS NOT NULL",
+                (driver_id,),
+            ).fetchall()
+            for inc in incidents:
+                path = inc["evidence_path"]
+                if path:
+                    full_path = os.path.join(str(settings.PROJECT_ROOT), path)
+                    if os.path.exists(full_path):
+                        try:
+                            os.remove(full_path)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # 2. Delete linked table records in correct dependency order
+        try:
+            self._conn.execute(
+                "DELETE FROM monitoring_incidents WHERE driver_id = ? OR session_id IN (SELECT session_id FROM monitoring_sessions WHERE driver_id = ?)",
+                (driver_id, driver_id),
+            )
+            self._conn.execute("DELETE FROM driver_safety_ratings WHERE driver_id = ?", (driver_id,))
+            self._conn.execute("DELETE FROM monitoring_sessions WHERE driver_id = ?", (driver_id,))
+            self._conn.execute("DELETE FROM driver_vehicle_assignments WHERE driver_id = ?", (driver_id,))
+        except Exception:
+            pass
+
+        # 3. Delete driver row
         cursor = self._conn.execute(
             "DELETE FROM drivers WHERE driver_id = ?",
             (driver_id,),
         )
         self._conn.commit()
         return cursor.rowcount > 0
+

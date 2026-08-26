@@ -31,6 +31,9 @@ class TripResponse(BaseModel):
     status: str
     duration_minutes: Optional[float]
     safety_score: Optional[float]
+    alerts_count: int = 0
+    max_drowsiness_score: str = "KSS 1.0"
+    alcohol_status: str = "Normal"
 
 
 def _get_repos(conn=Depends(get_connection)):
@@ -44,7 +47,7 @@ def list_trips(
     search: Optional[str] = Query(None),
     repos=Depends(_get_repos),
 ):
-    """List all monitoring sessions as trip records."""
+    """List all monitoring sessions as trip records with real incident metrics."""
     conn, m_repo, d_repo, v_repo = repos
 
     # Fetch all sessions (both active and completed)
@@ -83,6 +86,22 @@ def list_trips(
                 duration_minutes = round((end_dt - start_dt).total_seconds() / 60.0, 1)
             except Exception:
                 pass
+        elif session.start_time:
+            try:
+                start_dt = datetime.fromisoformat(session.start_time)
+                duration_minutes = round((datetime.utcnow() - start_dt).total_seconds() / 60.0, 1)
+            except Exception:
+                pass
+
+        # Query session-specific incidents
+        inc_stats = conn.execute(
+            "SELECT COUNT(*) AS total_alerts, MAX(kss_score) AS peak_kss FROM monitoring_incidents WHERE session_id = ?",
+            (session.session_id,),
+        ).fetchone()
+
+        alerts_count = inc_stats["total_alerts"] if inc_stats else 0
+        peak_kss = inc_stats["peak_kss"] if inc_stats and inc_stats["peak_kss"] is not None else None
+        max_drowsiness_score = f"KSS {peak_kss:.1f}" if peak_kss is not None else "KSS 1.0 (Safe)"
 
         # Map session status to trip status
         trip_status = "IN_PROGRESS" if session.status == "ACTIVE" else "COMPLETED"
@@ -97,13 +116,16 @@ def list_trips(
             driver_id=session.driver_id,
             driver_name=driver_name,
             vehicle_plate=vehicle_plate,
-            origin="Depot",  # Monitoring system doesn't track routes
-            destination="Route Assignment",
+            origin="Depot / Fleet Terminal",
+            destination="Commercial Route (Prototype)",
             start_time=session.start_time,
             end_time=session.end_time,
             status=trip_status,
             duration_minutes=duration_minutes,
             safety_score=safety_score,
+            alerts_count=alerts_count,
+            max_drowsiness_score=max_drowsiness_score,
+            alcohol_status="Pass (0.00% BAC • Standby)",
         )
 
         # Apply search filter

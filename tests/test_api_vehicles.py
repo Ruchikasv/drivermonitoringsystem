@@ -18,13 +18,6 @@ def api_client(monkeypatch):
     conn = get_connection(db_path=":memory:")
     init_db(conn)
 
-    # Monkeypatch get_connection so API endpoints use our test connection
-    def override_get_connection():
-        # Return a connection to the same memory database (or wrap)
-        # Note: :memory: is per-connection in SQLite unless URI shared cache is used
-        # We can patch get_connection to return conn without closing
-        return conn
-
     # For safety in API routes that call conn.close(), create a proxy
     class UncloseableConn:
         def __init__(self, c):
@@ -37,9 +30,11 @@ def api_client(monkeypatch):
     uncloseable = UncloseableConn(conn)
     monkeypatch.setattr("app.api.vehicles.get_connection", lambda: uncloseable)
     monkeypatch.setattr("app.api.drivers.get_connection", lambda: uncloseable)
+    app.dependency_overrides[get_connection] = lambda: uncloseable
 
     client = TestClient(app)
     yield client, conn
+    app.dependency_overrides.pop(get_connection, None)
     conn.close()
 
 
@@ -128,20 +123,97 @@ class TestVehicleAPIEndpoints:
         assert v_list[0]["assigned_driver"]["driver_id"] == d_id
         assert v_list[0]["assigned_driver"]["name"] == "Lakshmi"
 
-        # Attempt to delete assigned vehicle (must be blocked with detail error)
+        # Deleting assigned vehicle safely unassigns it and deletes the vehicle
         del_res = client.delete(f"/vehicles/{v_id}")
-        assert del_res.status_code == 400
-        assert "currently assigned" in del_res.json()["detail"]
+        assert del_res.status_code == 200
+        assert len(client.get("/vehicles").json()) == 0
 
-        # Unassign vehicle
-        unassign_res = client.delete(f"/drivers/{d_id}/vehicle")
-        assert unassign_res.status_code == 200
+        # Driver remains registered in /drivers
+        drivers = client.get("/drivers").json()
+        assert any(d["driver_id"] == d_id for d in drivers)
 
-        # Verify vehicle is now available
-        v_list_after = client.get("/vehicles").json()
-        assert v_list_after[0]["assigned_driver"] is None
+    def test_delete_actively_used_vehicle_returns_409(self, api_client):
+        client, conn = api_client
+        driver_repo = DriverRepository(conn)
+        d_id = driver_repo.add_driver("ActiveRuchika", _random_embedding())
 
-        # Delete available vehicle
+        v_res = client.post(
+            "/vehicles",
+            json={
+                "registration_number": "KA-01-LIVE-TRIP",
+                "model": "Tata Signa",
+                "vehicle_type": "Heavy Haul",
+            },
+        )
+        v_id = v_res.json()["vehicle_id"]
+
+        # Create ACTIVE monitoring session
+        from app.database.monitoring_repository import MonitoringRepository
+        m_repo = MonitoringRepository(conn)
+        session_id = m_repo.create_session(driver_id=d_id, vehicle_id=v_id)
+
+        # Attempt to delete vehicle while session is active -> 409 Conflict
+        del_res = client.delete(f"/vehicles/{v_id}")
+        assert del_res.status_code == 409
+        assert "currently active on route" in del_res.json()["detail"]
+
+        # End session -> Deletion now succeeds
+        m_repo.end_session(session_id, status="COMPLETED")
         del_success = client.delete(f"/vehicles/{v_id}")
         assert del_success.status_code == 200
         assert len(client.get("/vehicles").json()) == 0
+
+    def test_delete_nonexistent_vehicle_returns_404(self, api_client):
+        client, _ = api_client
+        res = client.delete("/vehicles/999999")
+        assert res.status_code == 404
+
+    def test_delete_vehicle_with_historical_monitoring_sessions_foreign_key_safety(self, api_client):
+        client, conn = api_client
+        driver_repo = DriverRepository(conn)
+        d_id = driver_repo.add_driver("Arjun", _random_embedding())
+
+        # 1. Create a vehicle
+        v_res = client.post(
+            "/vehicles",
+            json={
+                "registration_number": "KA-53-M-9999",
+                "model": "Volvo FH16",
+                "vehicle_type": "Heavy Haul",
+            },
+        )
+        v_id = v_res.json()["vehicle_id"]
+
+        # 2. Assign and create a monitoring session with incidents referencing this vehicle
+        from app.database.monitoring_repository import MonitoringRepository
+        m_repo = MonitoringRepository(conn)
+        session_id = m_repo.create_session(driver_id=d_id, vehicle_id=v_id)
+        m_repo.create_incident(
+            session_id=session_id,
+            driver_id=d_id,
+            vehicle_id=v_id,
+            event_type="yawn",
+            alert_level=1,
+            kss_score=5.0,
+            ear=0.25,
+            mar=0.60,
+            perclos=0.10,
+            head_pitch_deg=0.0,
+        )
+        m_repo.end_session(session_id, status="COMPLETED")
+
+        # 3. Deleting vehicle must succeed without sqlite3.IntegrityError: FOREIGN KEY constraint failed
+        del_res = client.delete(f"/vehicles/{v_id}")
+        assert del_res.status_code == 200
+        assert del_res.json()["success"] is True
+
+        # 4. Immediate GET /vehicles must not contain the deleted vehicle
+        vehicles = client.get("/vehicles").json()
+        assert not any(v["vehicle_id"] == v_id for v in vehicles)
+
+        # 5. Session and incident records must still exist with vehicle_id set to NULL
+        session_record = m_repo.get_session(session_id)
+        assert session_record is not None
+        assert session_record.vehicle_id is None
+
+

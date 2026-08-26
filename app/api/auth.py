@@ -13,6 +13,7 @@ FaceDetector + DriverRepository logic.
 """
 
 import base64
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,10 +22,13 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.config import settings
 from app.database.connection import get_connection
 from app.database.driver_repository import DriverRepository
-from app.face_recognition.comparator import find_best_match
+from app.face_recognition.comparator import find_best_match, average_embeddings, cosine_similarity
 from app.face_recognition.detector import FaceDetector
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -35,15 +39,47 @@ def _get_db():
     finally:
         conn.close()
 
-# Lazy-loaded detector shared across requests (ArcFace init is slow).
+# Shared detector singleton and lifecycle state
 _detector: Optional[FaceDetector] = None
+_model_ready: bool = False
+_model_error: Optional[str] = None
 
+
+def warmup_detector() -> bool:
+    """Preload InsightFace model on server startup."""
+    global _detector, _model_ready, _model_error
+    logger.info("[AUTH MODEL] Initializing InsightFace...")
+    try:
+        if _detector is None:
+            _detector = FaceDetector()
+        _detector._ensure_model_loaded()
+        _model_ready = True
+        _model_error = None
+        logger.info("[AUTH MODEL] InsightFace ready")
+        logger.info("[AUTH MODEL] Registration service ready")
+        return True
+    except Exception as exc:
+        _model_ready = False
+        _model_error = str(exc)
+        logger.error("[AUTH MODEL] InsightFace initialization failed: %s", exc)
+        return False
+
+
+def is_model_ready() -> tuple[bool, Optional[str]]:
+    """Return whether the face recognition model is initialized and ready."""
+    return _model_ready, _model_error
 
 
 def _get_detector() -> FaceDetector:
-    global _detector
-    if _detector is None:
-        _detector = FaceDetector()
+    global _detector, _model_ready, _model_error
+    if not _model_ready or _detector is None:
+        # Attempt initialization if not ready
+        success = warmup_detector()
+        if not success or _detector is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Face recognition service is unavailable: {_model_error or 'Model initialization failed'}",
+            )
     return _detector
 
 
@@ -109,48 +145,94 @@ def register_driver(body: RegisterRequest, conn=Depends(_get_db)):
     Accepts 5–15 base64 JPEG frames from the browser camera, extracts an
     ArcFace embedding from each, averages them, and stores the result.
     """
+    logger.info("[AUTH REGISTER] request received")
+    
     if not body.name.strip():
         raise HTTPException(status_code=400, detail="Driver name is required")
     if not body.frames_b64:
         raise HTTPException(status_code=400, detail="At least one frame is required")
 
-    detector = _get_detector()
-    embeddings = []
+    logger.info("[AUTH REGISTER] face samples received: %d frames", len(body.frames_b64))
 
+    repo = DriverRepository(conn)
+
+    # 1. Check duplicate license number if provided
+    if body.license_no and body.license_no.strip():
+        lic = body.license_no.strip()
+        existing_by_lic = conn.execute(
+            "SELECT * FROM drivers WHERE LOWER(license_no) = LOWER(?)",
+            (lic,)
+        ).fetchone()
+        if existing_by_lic:
+            logger.warning("[AUTH REGISTER] duplicate license_no '%s' matches driver_id %s", lic, existing_by_lic["driver_id"])
+            raise HTTPException(
+                status_code=409,
+                detail=f"Driving license '{lic}' is already registered to driver '{existing_by_lic['name']}' (ID #{existing_by_lic['driver_id']}).",
+            )
+
+    # 2. Ensure model is loaded and ready
+    detector = _get_detector()
+    logger.info("[AUTH REGISTER] face model ready")
+
+    # 3. Process frames and extract embeddings
+    embeddings = []
     for idx, b64 in enumerate(body.frames_b64):
-        frame = _decode_frame(b64)
-        face = detector.detect_single_face(frame)
-        if face is None:
-            continue  # Skip frames with no face detected
-        embeddings.append(face.embedding)
+        try:
+            frame = _decode_frame(b64)
+            face = detector.detect_single_face(frame)
+            if face is not None:
+                embeddings.append(face.embedding)
+        except HTTPException:
+            raise
+        except Exception as err:
+            logger.warning("[AUTH REGISTER] error extracting face from frame %d: %s", idx, err)
+            continue
 
     if not embeddings:
+        logger.warning("[AUTH REGISTER] no face detected in any of the %d provided frames", len(body.frames_b64))
         raise HTTPException(
             status_code=422,
             detail="No face detected in any of the provided frames. "
                    "Please ensure the driver is facing the camera with good lighting.",
         )
 
-    # Average the embeddings (ArcFace vectors are unit-normalised, so the
-    # average is then re-normalised to stay on the unit sphere).
-    from app.face_recognition.comparator import average_embeddings
+    # 4. Average embeddings and normalize
     avg_emb = average_embeddings(embeddings)
+    logger.info("[AUTH REGISTER] face embedding generated")
 
-    repo = DriverRepository(conn)
+    # 5. Check duplicate face biometrics against all registered drivers
+    all_drivers = repo.get_all_drivers()
+    for existing in all_drivers:
+        sim = cosine_similarity(avg_emb, existing.face_embedding)
+        if sim >= settings.DUPLICATE_DETECTION_THRESHOLD:
+            logger.warning(
+                "[AUTH REGISTER] duplicate biometrics detected: matches driver '%s' (ID %d) with similarity %.3f",
+                existing.name, existing.driver_id, sim
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Driver '{existing.name}' (ID #{existing.driver_id}) is already registered with matching facial biometrics (similarity: {sim:.2f}).",
+            )
+
+    # 6. Database insert
+    logger.info("[AUTH REGISTER] database insert started")
     driver_id = repo.add_driver(
         name=body.name.strip(),
         embedding=avg_emb,
-        phone=body.phone,
-        email=body.email,
-        license_no=body.license_no,
+        phone=body.phone.strip() if body.phone else None,
+        email=body.email.strip() if body.email else None,
+        license_no=body.license_no.strip() if body.license_no else None,
     )
+    logger.info("[AUTH REGISTER] database insert completed")
 
-    return RegisterResponse(
+    resp = RegisterResponse(
         driver_id=driver_id,
         name=body.name.strip(),
-        message=f"Driver '{body.name.strip()}' registered successfully (ID {driver_id}). "
-                f"Used {len(embeddings)}/{len(body.frames_b64)} frames.",
+        message=f"Driver '{body.name.strip()}' registered successfully (ID #{driver_id}). "
+                f"Used {len(embeddings)}/{len(body.frames_b64)} biometric frames.",
     )
+    logger.info("[AUTH REGISTER] response returned")
+    return resp
 
 
 @router.post("/authenticate", response_model=AuthenticateResponse)

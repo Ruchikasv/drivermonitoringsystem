@@ -108,9 +108,13 @@ def delete_vehicle(vehicle_id: int):
     try:
         repo = VehicleRepository(conn)
         repo.delete_vehicle(vehicle_id)
-        return {"success": True, "message": "Vehicle deleted successfully"}
+        return {"success": True, "message": f"Vehicle #{vehicle_id} deleted successfully"}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e).strip("'\""))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete vehicle #{vehicle_id}: {e}")
     finally:
         conn.close()
 

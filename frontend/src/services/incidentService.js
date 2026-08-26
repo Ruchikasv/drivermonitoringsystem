@@ -26,6 +26,14 @@ export const incidentService = {
   },
 
   /**
+   * Delete evidence screenshot and clear DB path.
+   */
+  async deleteEvidence(incidentId) {
+    const response = await apiClient.delete(`/incidents/${incidentId}/evidence`);
+    return response.data;
+  },
+
+  /**
    * Get direct URL to evidence screenshot JPEG.
    */
   getEvidenceUrl(incidentId) {
@@ -33,3 +41,4 @@ export const incidentService = {
     return `${base}/incidents/${incidentId}/evidence`;
   },
 };
+

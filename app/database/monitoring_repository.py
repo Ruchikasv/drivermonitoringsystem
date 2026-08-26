@@ -211,6 +211,32 @@ class MonitoringRepository:
         ).fetchall()
         return [MonitoringIncident(**dict(r)) for r in rows]
 
+    def delete_incident_evidence(self, incident_id: int) -> bool:
+        """
+        Delete the physical screenshot file and clear the evidence_path
+        in SQLite for this incident.
+        """
+        import os
+        from app.config import settings
+
+        incident = self.get_incident(incident_id)
+        if not incident or not incident.evidence_path:
+            return False
+
+        full_path = os.path.join(str(settings.PROJECT_ROOT), incident.evidence_path)
+        if os.path.exists(full_path):
+            try:
+                os.remove(full_path)
+            except Exception:
+                pass
+
+        cursor = self._conn.execute(
+            "UPDATE monitoring_incidents SET evidence_path = NULL WHERE incident_id = ?",
+            (incident_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
     # ------------------------------------------------------------------
     # Safety Ratings
     # ------------------------------------------------------------------

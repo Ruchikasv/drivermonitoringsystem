@@ -50,12 +50,18 @@ def get_fleet_metrics(repos=Depends(_get_repos)) -> dict[str, Any]:
 
     return {
         "total_drivers": total_drivers,
+        "totalDrivers": total_drivers,
         "active_trips": active_sessions,
+        "activeTrips": active_sessions,
         "total_incidents": total_incidents,
+        "todayAlerts": total_incidents,
+        "today_alerts": total_incidents,
         "critical_incidents": critical_incidents,
         "warning_incidents": warning_incidents,
         "nudge_incidents": nudge_incidents,
         "average_safety_score": avg_score,
+        "fleetSafetyScore": avg_score,
+        "scoreDelta": "+0.0% vs avg",
     }
 
 

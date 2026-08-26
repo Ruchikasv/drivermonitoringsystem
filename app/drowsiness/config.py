@@ -57,19 +57,20 @@ PERCLOS_WARN_THRESHOLD: float = float(os.getenv("DMS_PERCLOS_WARN", "0.15"))
 # ---------------------------------------------------------------------------
 
 # Both eyes must be closed for at least this long to trigger a microsleep.
-MICROSLEEP_MIN_DURATION_SECONDS: float = float(os.getenv("DMS_MICROSLEEP_DURATION", "0.8"))
+# Normal blinks are 0.15s - 0.35s; 1.5s requires genuine prolonged closure.
+MICROSLEEP_MIN_DURATION_SECONDS: float = float(os.getenv("DMS_MICROSLEEP_DURATION", "1.5"))
 
 # Mouth must be open past MAR_THRESHOLD for this long to count as a yawn.
 YAWN_MIN_DURATION_SECONDS: float = float(os.getenv("DMS_YAWN_DURATION", "1.5"))
 
 # Head pitch below HEAD_NOD_PITCH_THRESHOLD_DEG for this long → head nod.
-HEAD_NOD_MIN_DURATION_SECONDS: float = float(os.getenv("DMS_HEAD_NOD_DURATION", "0.8"))
+HEAD_NOD_MIN_DURATION_SECONDS: float = float(os.getenv("DMS_HEAD_NOD_DURATION", "1.0"))
 
 # Head pitch angle (degrees, negative = downward tilt) indicating a head nod.
 HEAD_NOD_PITCH_THRESHOLD_DEG: float = float(os.getenv("DMS_HEAD_NOD_PITCH", "-15.0"))
 
 # Cooldown between event triggers of the same type (seconds).
-EVENT_COOLDOWN_SECONDS: float = float(os.getenv("DMS_EVENT_COOLDOWN", "1.0"))
+EVENT_COOLDOWN_SECONDS: float = float(os.getenv("DMS_EVENT_COOLDOWN", "1.5"))
 
 # ---------------------------------------------------------------------------
 # KSS / Alert

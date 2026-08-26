@@ -99,6 +99,18 @@ class TestEventDetectors:
         # Eye closed at 1.0s -> 0.6s elapsed >= 0.5s -> triggers microsleep!
         assert detector.update(0.10, 1.0)
 
+    def test_normal_blink_does_not_trigger_microsleep(self):
+        # Default microsleep requires 1.5s
+        detector = MicrosleepDetector()
+        # Normal blink: eyes close for 0.25s (from t=0.1s to t=0.35s)
+        assert not detector.update(0.30, 0.0)
+        assert not detector.update(0.10, 0.10)
+        assert not detector.is_condition_active()  # Condition is NOT active/sustained yet!
+        assert not detector.update(0.10, 0.35)
+        assert not detector.is_condition_active()
+        # Eye opens again at t=0.40s
+        assert not detector.update(0.30, 0.40)
+        assert not detector.is_condition_active()
 
     def test_yawn_triggers_after_sustained_opening(self):
         detector = YawnDetector(min_duration_seconds=0.8)
@@ -153,23 +165,265 @@ class TestKSSAndFusion:
 
 
 class TestAlertManager:
-    def test_alert_escalation_tiers(self, tmp_path):
+    def test_normal_awake_driver_produces_no_alert(self, tmp_path):
         log_file = tmp_path / "test_incidents.jsonl"
         mgr = AlertManager(log_path=str(log_file))
 
-        # Alert driver -> no alert
-        alert_clean = mgr.evaluate({
+        # Awake driver (EAR 0.30, PERCLOS 5%, KSS 1.5, Pitch -2 deg)
+        alert = mgr.evaluate({
             "timestamp": 100.0,
-            "kss_now": 2.0,
-            "raw_signals": {"avg_perclos": 0.05, "microsleeps_in_window": 0, "yawn_rate_per_min": 0},
+            "face_detected": True,
+            "kss_now": 1.5,
+            "ear": 0.30,
+            "mar": 0.28,
+            "pitch": -2.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.05, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
         })
-        assert alert_clean is None
+        assert alert is None
 
-        # Critical driver (KSS >= 7)
-        alert_crit = mgr.evaluate({
-            "timestamp": 200.0,
-            "kss_now": 7.8,
-            "raw_signals": {"avg_perclos": 0.40, "microsleeps_in_window": 1, "yawn_rate_per_min": 2},
+    def test_moderate_kss_alone_never_triggers_level_3(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # Moderate KSS (5.1 or 5.8) with awake eyes (EAR 0.30)
+        for kss in [5.1, 5.8, 6.2]:
+            alert = mgr.evaluate({
+                "timestamp": 100.0 + kss,
+                "face_detected": True,
+                "kss_now": kss,
+                "ear": 0.30,
+                "mar": 0.29,
+                "pitch": -3.0,
+                "sustained_eye_closure_seconds": 0.0,
+                "sustained_yawn_seconds": 0.0,
+                "sustained_nod_seconds": 0.0,
+                "raw_signals": {"avg_perclos": 0.12, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+            })
+            assert alert is None or alert["tier"] != "critical"
+
+    def test_moderate_perclos_alone_never_triggers_level_3(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # PERCLOS 21.4% or 27.2% with open eyes (EAR 0.32)
+        for p in [0.214, 0.272]:
+            alert = mgr.evaluate({
+                "timestamp": 100.0 + (p * 10),
+                "face_detected": True,
+                "kss_now": 5.2,
+                "ear": 0.32,
+                "mar": 0.28,
+                "pitch": -4.0,
+                "sustained_eye_closure_seconds": 0.0,
+                "sustained_yawn_seconds": 0.0,
+                "sustained_nod_seconds": 0.0,
+                "raw_signals": {"avg_perclos": p, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
+            })
+            assert alert is None or alert["tier"] != "critical"
+
+    def test_single_low_ear_frame_never_triggers_level_3(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # Single frame where EAR dips to 0.12 (sustained closure is only 0.1s)
+        alert = mgr.evaluate({
+            "timestamp": 100.0,
+            "face_detected": True,
+            "kss_now": 2.0,
+            "ear": 0.12,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 0.1,
+            "sustained_yawn_seconds": 0.0,
+            "sustained_nod_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.04, "microsleeps_in_window": 0, "yawns_in_window": 0, "head_nods_in_window": 0},
         })
-        assert alert_crit is not None
-        assert alert_crit["tier"] == "critical"
+        assert alert is None
+
+    def test_brief_eye_closures_under_1_5s_produce_no_alert(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # 0.5s closure
+        alert_05 = mgr.evaluate({
+            "timestamp": 100.0,
+            "face_detected": True,
+            "kss_now": 2.5,
+            "ear": 0.12,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 0.5,
+            "raw_signals": {"avg_perclos": 0.08, "microsleeps_in_window": 0},
+        })
+        assert alert_05 is None
+
+        # 1.0s closure
+        alert_10 = mgr.evaluate({
+            "timestamp": 105.0,
+            "face_detected": True,
+            "kss_now": 3.0,
+            "ear": 0.12,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 1.0,
+            "raw_signals": {"avg_perclos": 0.10, "microsleeps_in_window": 0},
+        })
+        assert alert_10 is None
+
+    def test_sustained_closure_escalates_properly(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # 1.6s closure -> Level 1 (Nudge)
+        alert_16 = mgr.evaluate({
+            "timestamp": 100.0,
+            "face_detected": True,
+            "kss_now": 5.5,
+            "ear": 0.14,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 1.6,
+            "raw_signals": {"avg_perclos": 0.15, "microsleeps_in_window": 0},
+        })
+        assert alert_16 is not None
+        assert alert_16["tier"] == "nudge"
+
+        # 2.0s closure -> Level 2 (Warning)
+        mgr._last_alert_time["warning"] = 0.0
+        alert_20 = mgr.evaluate({
+            "timestamp": 120.0,
+            "face_detected": True,
+            "kss_now": 6.5,
+            "ear": 0.14,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 2.0,
+            "raw_signals": {"avg_perclos": 0.20, "microsleeps_in_window": 0},
+        })
+        assert alert_20 is not None
+        assert alert_20["tier"] == "warning"
+
+        # 2.6s closure -> Level 3 (Critical)
+        mgr._last_alert_time["critical"] = 0.0
+        alert_26 = mgr.evaluate({
+            "timestamp": 140.0,
+            "face_detected": True,
+            "kss_now": 8.0,
+            "ear": 0.14,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 2.6,
+            "raw_signals": {"avg_perclos": 0.35, "microsleeps_in_window": 1},
+        })
+        assert alert_26 is not None
+        assert alert_26["tier"] == "critical"
+        assert "Prolonged eye closure" in alert_26["reason"]
+
+    def test_multi_signal_convergence_triggers_level_3(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # Sustained closure (1.6s) SIMULTANEOUSLY with downward head nod (-18.0 deg)
+        alert_multi = mgr.evaluate({
+            "timestamp": 100.0,
+            "face_detected": True,
+            "kss_now": 7.5,
+            "ear": 0.14,
+            "mar": 0.28,
+            "pitch": -18.0,
+            "sustained_eye_closure_seconds": 1.6,
+            "sustained_nod_seconds": 1.2,
+            "raw_signals": {"avg_perclos": 0.25, "microsleeps_in_window": 1, "head_nods_in_window": 1},
+        })
+        assert alert_multi is not None
+        assert alert_multi["tier"] == "critical"
+        assert "Multi-signal fatigue" in alert_multi["reason"]
+
+    def test_face_loss_resets_and_produces_no_alert(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # Face lost
+        alert = mgr.evaluate({
+            "timestamp": 100.0,
+            "face_detected": False,
+            "kss_now": 1.0,
+            "ear": 0.0,
+            "mar": 0.0,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.0, "microsleeps_in_window": 0},
+        })
+        assert alert is None
+
+    def test_repeated_frames_in_critical_event_do_not_duplicate(self, tmp_path):
+        log_file = tmp_path / "test_incidents.jsonl"
+        mgr = AlertManager(log_path=str(log_file))
+
+        # Frame 1: Critical triggers
+        alert1 = mgr.evaluate({
+            "timestamp": 100.0,
+            "face_detected": True,
+            "kss_now": 8.5,
+            "ear": 0.12,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 2.7,
+            "raw_signals": {"avg_perclos": 0.40, "microsleeps_in_window": 1},
+        })
+        assert alert1 is not None
+        assert alert1["tier"] == "critical"
+
+        # Frame 2: Next immediate frame (closure still 2.8s) -> MUST NOT duplicate
+        alert2 = mgr.evaluate({
+            "timestamp": 100.1,
+            "face_detected": True,
+            "kss_now": 8.5,
+            "ear": 0.12,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 2.8,
+            "raw_signals": {"avg_perclos": 0.40, "microsleeps_in_window": 1},
+        })
+        assert alert2 is None
+
+        # Driver recovers (eyes open for >2.0s)
+        mgr.evaluate({
+            "timestamp": 105.0,
+            "face_detected": True,
+            "kss_now": 2.0,
+            "ear": 0.30,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.10, "microsleeps_in_window": 0},
+        })
+        mgr.evaluate({
+            "timestamp": 107.0,
+            "face_detected": True,
+            "kss_now": 2.0,
+            "ear": 0.30,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 0.0,
+            "raw_signals": {"avg_perclos": 0.10, "microsleeps_in_window": 0},
+        })
+
+        # New critical event after cooldown -> fires as new distinct incident
+        mgr._last_alert_time["critical"] = 100.0  # cooldown ok (now=120)
+        alert_new = mgr.evaluate({
+            "timestamp": 120.0,
+            "face_detected": True,
+            "kss_now": 8.5,
+            "ear": 0.12,
+            "mar": 0.28,
+            "pitch": 0.0,
+            "sustained_eye_closure_seconds": 2.6,
+            "raw_signals": {"avg_perclos": 0.40, "microsleeps_in_window": 1},
+        })
+        assert alert_new is not None
+        assert alert_new["tier"] == "critical"
+

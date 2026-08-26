@@ -73,6 +73,9 @@ export default function DriverAuthPage() {
 
       const frameB64 = canvas.toDataURL('image/jpeg', 0.85);
       const res = await authService.authenticateDriver(frameB64);
+      
+      // Stop authentication camera stream immediately upon success
+      stopCamera();
       setAuthResult(res);
 
       if (res.vehicle_id) {
@@ -97,11 +100,11 @@ export default function DriverAuthPage() {
     setErrorMsg(null);
 
     try {
-      // 1. Explicitly stop and release browser camera so the server monitoring WebSocket can acquire it
+      // 1. Explicitly stop and release browser camera stream
       stopCamera();
 
       // Short delay to guarantee hardware driver release
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 150));
 
       // 2. Create session in backend
       const session = await monitoringService.createSession(

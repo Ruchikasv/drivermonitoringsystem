@@ -21,6 +21,7 @@ export default function DriverRegisterPage() {
   const [capturedFrames, setCapturedFrames] = useState([]);
   const [progress, setProgress] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [registrationStatusText, setRegistrationStatusText] = useState('');
   const [successResult, setSuccessResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
 
@@ -70,7 +71,7 @@ export default function DriverRegisterPage() {
       setErrorMsg('Please enter the driver full name first.');
       return;
     }
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || capturing || submitting) return;
 
     setErrorMsg(null);
     setCapturing(true);
@@ -106,6 +107,16 @@ export default function DriverRegisterPage() {
   const submitEnrollment = async (frames) => {
     setSubmitting(true);
     setErrorMsg(null);
+    setRegistrationStatusText('Preparing face recognition...');
+
+    // Dynamic progressive states while waiting for backend
+    const timer1 = setTimeout(() => {
+      setRegistrationStatusText('Processing face...');
+    }, 500);
+
+    const timer2 = setTimeout(() => {
+      setRegistrationStatusText('Saving driver registration...');
+    }, 1800);
 
     try {
       const res = await authService.registerDriver({
@@ -116,12 +127,23 @@ export default function DriverRegisterPage() {
         frames_b64: frames,
       });
 
-      // Stop camera once registered
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      setRegistrationStatusText('Face registered successfully.');
+
+      // Stop camera immediately once registered successfully
       stopCamera();
       setSuccessResult(res);
     } catch (err) {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
       console.error('Registration failed:', err);
-      setErrorMsg(err.response?.data?.detail || 'Registration failed. Ensure face is clearly visible.');
+      const detail =
+        err.response?.data?.detail ||
+        (err.code === 'ECONNABORTED'
+          ? 'Registration timed out. The server may still be processing your biometrics.'
+          : err.message || 'Registration failed. Ensure face is clearly visible.');
+      setErrorMsg(detail);
     } finally {
       setSubmitting(false);
     }
@@ -149,6 +171,9 @@ export default function DriverRegisterPage() {
               <CheckCircle2 className="w-10 h-10" />
             </div>
             <h2 className="text-3xl font-bold text-white mb-2">Enrollment Successful!</h2>
+            <p className="text-emerald-400 font-semibold text-sm mb-1">
+              Face registered successfully.
+            </p>
             <p className="text-slate-400 text-sm mb-6">
               Driver profile for <strong className="text-white">{successResult.name}</strong> has been registered with ArcFace biometric vectors.
             </p>
@@ -159,7 +184,7 @@ export default function DriverRegisterPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Status:</span>
-                <span className="font-semibold text-emerald-400">Biometrics Ready</span>
+                <span className="font-semibold text-emerald-400">Biometrics Persisted in Database</span>
               </div>
             </div>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
@@ -176,6 +201,7 @@ export default function DriverRegisterPage() {
                 onClick={() => {
                   setSuccessResult(null);
                   setFormData({ name: '', phone: '', email: '', license_no: '' });
+                  setRegistrationStatusText('');
                   startCamera();
                 }}
                 className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl transition"
@@ -197,10 +223,11 @@ export default function DriverRegisterPage() {
                   <input
                     type="text"
                     required
+                    disabled={capturing || submitting}
                     placeholder="e.g. Ruchika Sharma"
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 disabled:opacity-60 transition"
                   />
                 </div>
 
@@ -208,10 +235,11 @@ export default function DriverRegisterPage() {
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Driving License Number</label>
                   <input
                     type="text"
+                    disabled={capturing || submitting}
                     placeholder="e.g. DL-KA01202200981"
                     value={formData.license_no}
                     onChange={(e) => setFormData({ ...formData, license_no: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 disabled:opacity-60 transition"
                   />
                 </div>
 
@@ -219,10 +247,11 @@ export default function DriverRegisterPage() {
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Phone Number</label>
                   <input
                     type="text"
+                    disabled={capturing || submitting}
                     placeholder="e.g. +91 98765 43210"
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 disabled:opacity-60 transition"
                   />
                 </div>
 
@@ -230,10 +259,11 @@ export default function DriverRegisterPage() {
                   <label className="block text-xs font-semibold text-slate-400 mb-1">Email Address</label>
                   <input
                     type="email"
+                    disabled={capturing || submitting}
                     placeholder="e.g. driver@fleet.com"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 disabled:opacity-60 transition"
                   />
                 </div>
               </div>
@@ -252,8 +282,9 @@ export default function DriverRegisterPage() {
                 <h2 className="text-xl font-bold text-white">Biometric Face Capture</h2>
                 <button
                   type="button"
+                  disabled={capturing || submitting}
                   onClick={startCamera}
-                  className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 font-semibold"
+                  className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 disabled:opacity-50 font-semibold"
                 >
                   <RefreshCw className="w-3.5 h-3.5" /> Reset Camera
                 </button>
@@ -272,7 +303,7 @@ export default function DriverRegisterPage() {
                 {/* Face Oval Overlay Guide */}
                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
                   <div className={`w-56 h-72 border-2 border-dashed rounded-[50%] transition-colors duration-300 ${
-                    capturing ? 'border-cyan-400 bg-cyan-500/10 animate-pulse' : 'border-slate-500/60'
+                    capturing || submitting ? 'border-cyan-400 bg-cyan-500/10 animate-pulse' : 'border-slate-500/60'
                   }`} />
                 </div>
 
@@ -293,6 +324,15 @@ export default function DriverRegisterPage() {
                     </div>
                   </div>
                 )}
+
+                {submitting && (
+                  <div className="absolute bottom-4 left-4 right-4 bg-slate-950/90 backdrop-blur border border-cyan-500/30 rounded-xl p-3 flex items-center gap-3">
+                    <Loader2 className="w-5 h-5 animate-spin text-cyan-400 shrink-0" />
+                    <div className="text-xs font-semibold text-cyan-300">
+                      {registrationStatusText || 'Processing face...'}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <p className="text-xs text-slate-400 mt-4 text-center">
@@ -308,7 +348,7 @@ export default function DriverRegisterPage() {
                 {submitting ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    Extracting ArcFace Vectors...
+                    <span>{registrationStatusText || 'Processing face...'}</span>
                   </>
                 ) : capturing ? (
                   <>

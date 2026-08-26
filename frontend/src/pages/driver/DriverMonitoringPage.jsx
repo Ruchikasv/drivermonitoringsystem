@@ -25,6 +25,8 @@ export default function DriverMonitoringPage() {
 
   const [connected, setConnected] = useState(false);
   const [frameB64, setFrameB64] = useState(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState(null);
   const [driverInfo, setDriverInfo] = useState({ name: 'Driver', vehicle: 'Commercial Vehicle' });
   const [metrics, setMetrics] = useState({
     ear: 0.30,
@@ -52,6 +54,10 @@ export default function DriverMonitoringPage() {
 
   const wsRef = useRef(null);
   const audioCtxRef = useRef(null);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const captureIntervalRef = useRef(null);
   const startTimeRef = useRef(Date.now());
 
   // Web Audio chime generator
@@ -87,33 +93,70 @@ export default function DriverMonitoringPage() {
       gain.connect(ctx.destination);
 
       if (tier === 'critical') {
-        // High alert siren
+        // High alert emergency siren
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.4);
-        gain.gain.setValueAtTime(0.3, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.4, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.8);
         osc.start();
-        osc.stop(ctx.currentTime + 0.5);
+        osc.stop(ctx.currentTime + 0.8);
       } else if (tier === 'warning') {
-        // Double pulse warning
+        // Noticeably longer BEEEEEP
         osc.type = 'square';
-        osc.frequency.setValueAtTime(600, ctx.currentTime);
-        gain.gain.setValueAtTime(0.2, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
+        osc.frequency.setValueAtTime(580, ctx.currentTime);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.45);
         osc.start();
-        osc.stop(ctx.currentTime + 0.25);
+        osc.stop(ctx.currentTime + 0.45);
       } else {
-        // Gentle nudge chime
+        // Short, simple caution beep
         osc.type = 'sine';
         osc.frequency.setValueAtTime(520, ctx.currentTime);
-        gain.gain.setValueAtTime(0.15, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.18, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.18);
         osc.start();
-        osc.stop(ctx.currentTime + 0.2);
+        osc.stop(ctx.currentTime + 0.18);
       }
     } catch (e) {
       console.warn('Audio playback error:', e);
+    }
+  };
+
+  const stopWebcam = () => {
+    if (captureIntervalRef.current) {
+      clearInterval(captureIntervalRef.current);
+      captureIntervalRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        track.stop();
+      });
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraReady(false);
+  };
+
+  const startWebcam = async () => {
+    stopWebcam();
+    setCameraError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+      setCameraReady(true);
+    } catch (err) {
+      console.error('Monitoring webcam error:', err);
+      setCameraError('Unable to access monitoring webcam. Please ensure camera permissions are granted.');
     }
   };
 
@@ -123,6 +166,8 @@ export default function DriverMonitoringPage() {
       return;
     }
 
+    startWebcam();
+
     const wsUrl = monitoringService.getWebSocketUrl(sessionId);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -130,6 +175,23 @@ export default function DriverMonitoringPage() {
     ws.onopen = () => {
       setConnected(true);
       console.log('Connected to driver monitoring WebSocket:', sessionId);
+
+      // Start streaming frames to backend at ~14 FPS
+      if (captureIntervalRef.current) clearInterval(captureIntervalRef.current);
+      captureIntervalRef.current = setInterval(() => {
+        if (!videoRef.current || !canvasRef.current || ws.readyState !== WebSocket.OPEN) return;
+        const video = videoRef.current;
+        if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+        const canvas = canvasRef.current;
+        canvas.width = 640;
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const b64 = canvas.toDataURL('image/jpeg', 0.65);
+        ws.send(JSON.stringify({ frame: b64 }));
+      }, 70);
     };
 
     ws.onmessage = (event) => {
@@ -138,6 +200,7 @@ export default function DriverMonitoringPage() {
 
         if (data.error) {
           console.error('WebSocket server error:', data.error);
+          setCameraError(data.error);
           return;
         }
 
@@ -175,6 +238,7 @@ export default function DriverMonitoringPage() {
     };
 
     return () => {
+      stopWebcam();
       if (ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
@@ -182,11 +246,12 @@ export default function DriverMonitoringPage() {
         audioCtxRef.current.close().catch(() => {});
       }
     };
-  }, [sessionId, audioEnabled]);
+  }, [sessionId]);
 
   const handleEndTrip = async () => {
     setEnding(true);
     try {
+      stopWebcam();
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close();
       }
@@ -211,31 +276,46 @@ export default function DriverMonitoringPage() {
     }
   };
 
-  // Status computation
+  // Status computation matching Requirements 5 & 6
   const isCritical = fusion.is_critical || currentAlert?.tier === 'critical' || metrics.microsleep_active;
-  const isWarning = fusion.kss_now >= 6.0 || currentAlert?.tier === 'warning' || metrics.yawn_active;
-  const isNudge = currentAlert?.tier === 'nudge';
+  const isWarning = !isCritical && (fusion.kss_now >= 6.0 || currentAlert?.tier === 'warning' || metrics.yawn_active);
+  const isNudge = !isCritical && !isWarning && (fusion.kss_now >= 4.5 || currentAlert?.tier === 'nudge' || metrics.perclos >= 0.20);
 
   let statusBg = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400';
-  let statusText = 'SAFE & ATTENTIVE';
+  let statusTitle = 'SAFE & ATTENTIVE';
+  let statusSubtitle = 'No active hazard detected';
   let statusIcon = <ShieldCheck className="w-5 h-5 text-emerald-400" />;
 
   if (isCritical) {
     statusBg = 'bg-rose-500/20 border-rose-500/50 text-rose-400 animate-pulse';
-    statusText = 'CRITICAL DROWSINESS — PULL OVER SAFELY';
+    statusTitle = 'LEVEL 3 — CRITICAL DROWSINESS';
+    statusSubtitle = 'IMMEDIATE ATTENTION REQUIRED';
     statusIcon = <Flame className="w-5 h-5 text-rose-400 animate-bounce" />;
   } else if (isWarning) {
     statusBg = 'bg-amber-500/15 border-amber-500/40 text-amber-400';
-    statusText = 'WARNING — SIGNS OF FATIGUE DETECTED';
+    statusTitle = 'LEVEL 2 — DROWSINESS WARNING';
+    statusSubtitle = 'Take immediate corrective action';
     statusIcon = <AlertTriangle className="w-5 h-5 text-amber-400" />;
   } else if (isNudge) {
     statusBg = 'bg-cyan-500/15 border-cyan-500/30 text-cyan-400';
-    statusText = 'ATTENTION — SLIGHT DROWSINESS DETECTED';
+    statusTitle = 'LEVEL 1 — DROWSINESS DETECTED';
+    statusSubtitle = 'Please stay alert';
     statusIcon = <AlertTriangle className="w-5 h-5 text-cyan-400" />;
   }
 
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 sm:p-6 font-sans select-none">
+      {/* Hidden elements for capturing browser camera frames */}
+      <video
+        ref={videoRef}
+        playsInline
+        autoPlay
+        muted
+        className="hidden"
+      />
+      <canvas ref={canvasRef} className="hidden" />
+
       {/* Top Telemetry Header */}
       <header className="flex items-center justify-between bg-slate-900/80 border border-slate-800/80 rounded-2xl px-5 py-3.5 backdrop-blur">
         <div className="flex items-center gap-3">
@@ -248,7 +328,7 @@ export default function DriverMonitoringPage() {
               </span>
             </div>
             <div className="text-[11px] text-slate-400">
-              Session #{sessionId} &bull; {connected ? 'Live 15 FPS Active Stream' : 'Connecting to Hardware Camera...'}
+              Session #{sessionId} &bull; {connected ? 'Live Active Stream' : 'Connecting to FYP Engine...'}
             </div>
           </div>
         </div>
@@ -281,30 +361,55 @@ export default function DriverMonitoringPage() {
           <div className={`w-full mb-3 px-5 py-3 rounded-2xl border flex items-center justify-between font-bold text-sm tracking-wide ${statusBg}`}>
             <div className="flex items-center gap-2.5">
               {statusIcon}
-              <span>{statusText}</span>
+              <div>
+                <div className="text-sm font-extrabold tracking-wide">{statusTitle}</div>
+                <div className="text-xs font-normal opacity-90">{statusSubtitle}</div>
+              </div>
             </div>
-            <div className="text-xs uppercase opacity-80 font-mono">
-              KSS: {fusion.kss_now.toFixed(1)} / 9.0 ({fusion.kss_label})
+            <div className="text-xs uppercase opacity-80 font-mono text-right">
+              <div>KSS Estimate: {fusion.kss_now.toFixed(1)} / 9.0</div>
+              <div className="text-[10px] text-slate-400 font-normal">{fusion.kss_label}</div>
             </div>
           </div>
 
           {/* Camera Frame Container */}
           <div className="relative w-full aspect-[4/3] bg-slate-900 rounded-3xl overflow-hidden border border-slate-800 shadow-2xl flex items-center justify-center">
-            {frameB64 ? (
+            {cameraError ? (
+              <div className="flex flex-col items-center text-rose-400 text-sm gap-3 p-6 text-center">
+                <AlertTriangle className="w-10 h-10 text-rose-500" />
+                <span className="font-semibold">{cameraError}</span>
+                <button
+                  onClick={startWebcam}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold border border-slate-700 transition"
+                >
+                  Retry Camera Access
+                </button>
+              </div>
+            ) : frameB64 ? (
               <img
                 src={`data:image/jpeg;base64,${frameB64}`}
                 alt="Driver Live Stream"
                 className="w-full h-full object-cover transform -scale-x-100"
               />
+            ) : cameraReady ? (
+              <div className="flex flex-col items-center text-slate-500 text-sm gap-3">
+                <div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
+                <span>Processing Live Frames with FYP Engine...</span>
+              </div>
             ) : (
               <div className="flex flex-col items-center text-slate-500 text-sm gap-3">
                 <div className="w-10 h-10 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
-                <span>Initializing Live Stream from Server Camera...</span>
+                <span>Initializing Browser Webcam...</span>
               </div>
             )}
 
-            {/* Active Condition Badges */}
+            {/* Active Condition Badges & Face Detection Notice */}
             <div className="absolute top-4 left-4 flex flex-col gap-2">
+              {metrics.face_detected === false && (
+                <span className="px-3 py-1 bg-amber-500 text-slate-950 font-bold text-xs rounded-lg shadow-lg flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5" /> FACE NOT DETECTED
+                </span>
+              )}
               {metrics.microsleep_active && (
                 <span className="px-3 py-1 bg-rose-500 text-white font-bold text-xs rounded-lg shadow-lg animate-pulse flex items-center gap-1.5">
                   <Eye className="w-3.5 h-3.5" /> MICROSLEEP DETECTED
@@ -334,6 +439,20 @@ export default function DriverMonitoringPage() {
           <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
             <Activity className="w-4 h-4 text-cyan-400" /> Real-Time Driver Telemetry
           </h3>
+
+          {/* Contributing Factors Notification */}
+          {metrics.contributing_factors && metrics.contributing_factors.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3 text-xs space-y-1">
+              <span className="text-[11px] font-bold text-amber-400 uppercase block">Active Fatigue Signals:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {metrics.contributing_factors.map((factor, idx) => (
+                  <span key={idx} className="px-2 py-0.5 bg-amber-500/20 text-amber-300 rounded text-[11px] font-semibold">
+                    {factor}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Metric 1: Eye Aspect Ratio (EAR) */}
           <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-3.5">

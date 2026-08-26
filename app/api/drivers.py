@@ -44,11 +44,11 @@ def driver_to_dict(driver, vehicle_repo, monitoring_repo):
     total_sessions = safety_rating.total_sessions if safety_rating else 0
     total_incidents = safety_rating.total_incidents if safety_rating else 0
 
-    # Compute driving hours from completed sessions
+    # Compute driving hours from all sessions (completed + active)
     try:
         rows = monitoring_repo._conn.execute(
             """SELECT start_time, end_time FROM monitoring_sessions
-               WHERE driver_id = ? AND end_time IS NOT NULL""",
+               WHERE driver_id = ?""",
             (driver.driver_id,),
         ).fetchall()
         total_seconds = 0
@@ -56,13 +56,16 @@ def driver_to_dict(driver, vehicle_repo, monitoring_repo):
             from datetime import datetime
             try:
                 start = datetime.fromisoformat(row["start_time"])
-                end = datetime.fromisoformat(row["end_time"])
+                if row["end_time"]:
+                    end = datetime.fromisoformat(row["end_time"])
+                else:
+                    end = datetime.utcnow()
                 total_seconds += max(0, (end - start).total_seconds())
             except Exception:
                 pass
         driving_hours = round(total_seconds / 3600.0, 1)
     except Exception:
-        driving_hours = None
+        driving_hours = 0.0
 
     return {
         "driver_id": driver.driver_id,
@@ -124,3 +127,19 @@ def update_driver_profile(
 
     driver = repo.get_driver_by_id(driver_id)
     return driver_to_dict(driver, vehicle_repo, monitoring_repo)
+
+
+@router.delete("/{driver_id}")
+def delete_driver(driver_id: int, repos=Depends(_get_repos)):
+    """
+    Permanently fire and remove a driver from the fleet registry, cascading across
+    all monitoring sessions, assignments, incidents, and physical evidence files.
+    """
+    conn, repo, vehicle_repo, monitoring_repo = repos
+    deleted = repo.delete_driver(driver_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Driver #{driver_id} not found",
+        )
+    return {"status": "success", "message": f"Driver #{driver_id} permanently removed"}

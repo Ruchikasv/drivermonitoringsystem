@@ -39,6 +39,7 @@ def generate_evidence_screenshot(
     kss_score: Optional[float] = None,
     kss_label: Optional[str] = None,
     landmarks_px: Optional[np.ndarray] = None,
+    trigger_reason: Optional[str] = None,
 ) -> str:
     """
     Creates a styled composite image and saves it to data/evidence/.
@@ -63,7 +64,7 @@ def generate_evidence_screenshot(
 
     # Alert color schemes (BGR)
     tier_colors = {
-        "nudge": (0, 191, 255),      # Amber/Yellow-Orange (DeepSkyBlue in BGR is (0, 191, 255))
+        "nudge": (0, 191, 255),      # Amber/Yellow-Orange
         "warning": (0, 140, 255),    # Dark Orange
         "critical": (36, 36, 237),   # Bright Red
     }
@@ -110,7 +111,7 @@ def generate_evidence_screenshot(
     # -----------------------------------------------------------------------
     # Build styled composite image:
     # Top Bar: Alert level badge + Timestamp + Fleet Safety DMS
-    # Bottom Panel: Driver details, Vehicle, EAR, MAR, PERCLOS, Head Pose, KSS
+    # Bottom Panel: Driver details, Vehicle, EAR, MAR, PERCLOS, Head Pose, KSS, Trigger Reason
     # -----------------------------------------------------------------------
     top_bar_h = 44
     bottom_bar_h = 100
@@ -126,24 +127,20 @@ def generate_evidence_screenshot(
     composite[top_bar_h : top_bar_h + h, frame_x_offset : frame_x_offset + w] = canvas_frame
 
     # --- TOP BAR ---
-    # Header line
     cv2.putText(
         composite, "FLEET SAFETY DMS - INCIDENT EVIDENCE", (15, 28),
         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 1, cv2.LINE_AA
     )
-    # Timestamp on right
     cv2.putText(
         composite, now_str, (composite_w - 200, 28),
         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 160), 1, cv2.LINE_AA
     )
-    # Alert badge in center
     badge_text = f" [ LEVEL {alert_level}: {tier_text} ] "
     cv2.putText(
         composite, badge_text, (composite_w // 2 - 80, 28),
         cv2.FONT_HERSHEY_SIMPLEX, 0.55, tier_color, 2, cv2.LINE_AA
     )
 
-    # Divider line under top bar
     cv2.line(composite, (0, top_bar_h - 1), (composite_w, top_bar_h - 1), (50, 45, 40), 1)
 
     # --- BOTTOM PANEL ---
@@ -164,17 +161,17 @@ def generate_evidence_screenshot(
     ear_str = f"{ear:.3f}" if ear is not None else "N/A"
     mar_str = f"{mar:.3f}" if mar is not None else "N/A"
     perclos_str = f"{perclos * 100:.1f}%" if perclos is not None else "N/A"
-    cv2.putText(composite, f"EAR: {ear_str} (eye closure)", (col2_x, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+    cv2.putText(composite, f"EAR: {ear_str} (closure)", (col2_x, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
     cv2.putText(composite, f"MAR: {mar_str} (yawn)", (col2_x, y1 + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
     cv2.putText(composite, f"PERCLOS: {perclos_str}", (col2_x, y1 + 48), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
 
-    # Column 3: Head Pose & Fatigue Level
+    # Column 3: Head Pose & Fatigue Trigger
     pitch_val = head_pose.get("pitch", 0.0) if head_pose else 0.0
     kss_str = f"{kss_score:.1f}" if kss_score is not None else "N/A"
-    status_str = kss_label or event_type.capitalize()
-    cv2.putText(composite, f"Head Pitch: {pitch_val:.1f} deg", (col3_x, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-    cv2.putText(composite, f"KSS Fatigue: {kss_str} / 9.0", (col3_x, y1 + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-    cv2.putText(composite, f"Status: {status_str}", (col3_x, y1 + 48), cv2.FONT_HERSHEY_SIMPLEX, 0.48, tier_color, 1, cv2.LINE_AA)
+    cv2.putText(composite, f"Pitch: {pitch_val:.1f} deg | KSS: {kss_str}/9", (col3_x, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+    reason_display = (trigger_reason or "Severe drowsiness detected")[:42]
+    cv2.putText(composite, f"Reason: {reason_display}", (col3_x, y1 + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.42, tier_color, 1, cv2.LINE_AA)
+    cv2.putText(composite, f"Status: LEVEL {alert_level} CRITICAL", (col3_x, y1 + 48), cv2.FONT_HERSHEY_SIMPLEX, 0.45, tier_color, 1, cv2.LINE_AA)
 
     # Save to disk
     filename = f"evidence_d{driver_id}_s{session_id}_{file_timestamp}_{event_type}.jpg"

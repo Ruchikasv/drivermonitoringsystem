@@ -29,8 +29,20 @@ export default function OwnerMonitoringPage() {
         monitoringService.getActiveSessions(),
         monitoringService.getAllLiveMetrics(),
       ]);
-      setActiveSessions(sessions || []);
-      setLiveMetrics(metrics || {});
+      const validSessions = sessions || [];
+      const validIds = new Set(validSessions.map((s) => s.session_id));
+
+      const filteredMetrics = {};
+      if (metrics) {
+        Object.entries(metrics).forEach(([sid, data]) => {
+          if (validIds.has(Number(sid))) {
+            filteredMetrics[sid] = data;
+          }
+        });
+      }
+
+      setActiveSessions(validSessions);
+      setLiveMetrics(filteredMetrics);
     } catch (err) {
       console.error('Failed to poll live telemetry:', err);
     } finally {
@@ -38,12 +50,13 @@ export default function OwnerMonitoringPage() {
     }
   };
 
-  // Poll telemetry every 2.5 seconds (Decision 2: Metrics-only polling)
+  // Poll telemetry every 2.0 seconds for crisp synchronization
   useEffect(() => {
     fetchLiveTelemetry();
-    const interval = setInterval(fetchLiveTelemetry, 2500);
+    const interval = setInterval(fetchLiveTelemetry, 2000);
     return () => clearInterval(interval);
   }, []);
+
 
   return (
     <div className="p-6 sm:p-8 max-w-7xl mx-auto space-y-6">

@@ -2,16 +2,21 @@
 Tests for Monitoring Sessions, Incidents, Safety Ratings, and Evidence APIs.
 """
 
+import base64
+import os
 import sqlite3
+import cv2
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.main import app
+from app.config import settings
 from app.database.connection import get_connection, init_db
 from app.database.monitoring_repository import MonitoringRepository
 from app.database.driver_repository import DriverRepository
 from app.database.vehicle_repository import VehicleRepository
+
 
 
 @pytest.fixture
@@ -349,6 +354,154 @@ def test_get_active_sessions_excludes_completed_and_interrupted(client):
     assert s2_id not in active_ids
     assert s3_id in active_ids
     assert len(active_ids) == 1
+
+
+def test_websocket_monitoring_processes_browser_frames(client):
+    test_client, conn = client
+
+    # 1. Start a session
+    s_res = test_client.post("/sessions/", json={"driver_id": 1, "vehicle_id": 1}).json()
+    session_id = s_res["session_id"]
+
+    # 2. Connect via TestClient WebSocket
+    with test_client.websocket_connect(f"/ws/monitor/{session_id}") as ws:
+        # Create a blank 640x480 test frame
+        dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        _, buffer = cv2.imencode(".jpg", dummy_frame)
+        b64_frame = base64.b64encode(buffer).decode("utf-8")
+
+        # Send frame payload from simulated browser
+        ws.send_json({"frame": b64_frame})
+
+        # Receive response from backend FYP engine
+        res_data = ws.receive_json()
+        assert res_data["session_id"] == session_id
+        assert res_data["driver_id"] == 1
+        assert "metrics" in res_data
+        assert "fusion" in res_data
+        assert "frame_b64" in res_data
+        assert res_data["metrics"]["ear"] >= 0.0
+        assert res_data["fusion"]["kss_now"] >= 1.0
+
+
+def test_delete_incident_evidence(client, tmp_path):
+    test_client, conn = client
+    repo = MonitoringRepository(conn)
+
+    # 1. Create a dummy evidence file in app/evidence
+    evidence_dir = os.path.join(str(settings.PROJECT_ROOT), "app", "evidence")
+    os.makedirs(evidence_dir, exist_ok=True)
+    evidence_file = os.path.join(evidence_dir, "test_evidence_dummy.jpg")
+    with open(evidence_file, "wb") as f:
+        f.write(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb")
+
+    rel_path = os.path.relpath(evidence_file, str(settings.PROJECT_ROOT))
+
+    # 2. Create an incident with evidence_path
+    session_id = repo.create_session(1, 1)
+    inc_id = repo.create_incident(
+        session_id=session_id,
+        driver_id=1,
+        vehicle_id=1,
+        event_type="critical",
+        alert_level=3,
+        kss_score=8.5,
+        ear=0.15,
+        mar=0.30,
+        evidence_path=rel_path,
+    )
+
+    assert os.path.exists(evidence_file)
+
+    # 3. Call DELETE /incidents/{incident_id}/evidence
+    del_res = test_client.delete(f"/incidents/{inc_id}/evidence")
+    assert del_res.status_code == 200
+    assert del_res.json()["status"] == "success"
+
+    # 4. Verify physical file is deleted and DB evidence_path is NULL
+    assert not os.path.exists(evidence_file)
+    inc = repo.get_incident(inc_id)
+    assert inc is not None
+    assert inc.evidence_path is None
+
+
+def test_fire_driver_cascading_deletion(client):
+    test_client, conn = client
+    d_repo = DriverRepository(conn)
+    v_repo = VehicleRepository(conn)
+    m_repo = MonitoringRepository(conn)
+
+    # 1. Register a driver
+    driver_id = d_repo.add_driver(name="Driver To Fire", embedding=np.zeros(512, dtype=np.float32))
+
+    # 2. Assign a vehicle
+    v_id = v_repo.add_vehicle(registration_number="KA-04-FIRE-01", vehicle_type="Truck", model="Fleet Truck Alpha")
+    v_repo.assign_vehicle(driver_id, v_id)
+    assert v_repo.get_current_assignment(driver_id) is not None
+
+    # 3. Create session, incident, evidence file, and safety rating
+    s_id = m_repo.create_session(driver_id, v_id)
+    evidence_dir = os.path.join(str(settings.PROJECT_ROOT), "app", "evidence")
+    os.makedirs(evidence_dir, exist_ok=True)
+    evidence_file = os.path.join(evidence_dir, f"evidence_driver_{driver_id}.jpg")
+    with open(evidence_file, "wb") as f:
+        f.write(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb")
+    rel_path = os.path.relpath(evidence_file, str(settings.PROJECT_ROOT))
+
+    inc_id = m_repo.create_incident(
+        session_id=s_id,
+        driver_id=driver_id,
+        vehicle_id=v_id,
+        event_type="critical",
+        alert_level=3,
+        evidence_path=rel_path,
+    )
+    m_repo.recalculate_safety_rating(driver_id)
+
+    # 4. Fire driver via DELETE /drivers/{driver_id}
+    del_res = test_client.delete(f"/drivers/{driver_id}")
+    assert del_res.status_code == 200
+    assert del_res.json()["status"] == "success"
+
+    # 5. Verify Driver is deleted
+    assert d_repo.get_driver_by_id(driver_id) is None
+
+    # 6. Verify Vehicle is NOT deleted, but is unassigned (available in fleet)
+    veh = v_repo.get_vehicle_by_id(v_id)
+    assert veh is not None
+    assert v_repo.get_current_assignment(driver_id) is None
+
+    # 7. Verify sessions, incidents, safety ratings are deleted
+    assert len(m_repo.get_incidents_by_driver(driver_id)) == 0
+    assert m_repo.get_safety_rating(driver_id) is None
+    assert not os.path.exists(evidence_file)
+
+    # 8. Verify GET /drivers does not contain the deleted driver
+    drivers_list = test_client.get("/drivers").json()
+    assert not any(d["driver_id"] == driver_id for d in drivers_list)
+
+
+def test_driver_session_processor_process_frame_with_config():
+    """Verify DriverSessionProcessor runs process_frame without NameError on config."""
+    from app.api.monitoring_ws import DriverSessionProcessor
+    processor = DriverSessionProcessor(
+        session_id=999,
+        driver_id=1,
+        driver_name="Test Driver",
+        vehicle_reg="KA-01-MJ-8821",
+    )
+
+    # Frame with no face (blank image)
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    annotated, metrics, alert = processor.process_frame(dummy_frame)
+
+    assert annotated.shape == (480, 640, 3)
+    assert metrics["face_detected"] is False
+    assert metrics["fusion"]["kss_now"] == 1.0
+
+    # Clean up
+    processor.close()
+
 
 
 

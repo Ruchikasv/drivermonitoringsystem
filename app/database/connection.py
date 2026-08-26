@@ -188,9 +188,16 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 def seed_default_data(conn: sqlite3.Connection) -> None:
-    """Seed initial commercial fleet drivers and vehicles if missing."""
+    """Seed initial commercial fleet drivers and vehicles on fresh DB setup only."""
     from datetime import datetime, timezone
     import numpy as np
+
+    # If the database already has drivers or vehicles, do not resurrect deleted records on server restart
+    driver_cnt = conn.execute("SELECT COUNT(*) AS cnt FROM drivers").fetchone()["cnt"]
+    vehicle_cnt = conn.execute("SELECT COUNT(*) AS cnt FROM vehicles").fetchone()["cnt"]
+
+    if driver_cnt > 0 or vehicle_cnt > 0:
+        return
 
     now = datetime.now(timezone.utc).isoformat()
     dummy_emb = np.zeros(512, dtype=np.float32).tobytes()
@@ -205,12 +212,10 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
     ]
 
     for name, phone, email, lic in default_drivers:
-        row = conn.execute("SELECT driver_id FROM drivers WHERE name = ?", (name,)).fetchone()
-        if not row:
-            conn.execute(
-                "INSERT INTO drivers (name, face_embedding, created_at, phone, email, license_no) VALUES (?, ?, ?, ?, ?, ?)",
-                (name, dummy_emb, now, phone, email, lic),
-            )
+        conn.execute(
+            "INSERT INTO drivers (name, face_embedding, created_at, phone, email, license_no) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, dummy_emb, now, phone, email, lic),
+        )
 
     default_vehicles = [
         ("KA-01-MJ-8821", "Tata Prima 4028.S", "Heavy Haul"),
@@ -221,12 +226,10 @@ def seed_default_data(conn: sqlite3.Connection) -> None:
     ]
 
     for reg, model, vtype in default_vehicles:
-        row = conn.execute("SELECT vehicle_id FROM vehicles WHERE registration_number = ?", (reg,)).fetchone()
-        if not row:
-            conn.execute(
-                "INSERT INTO vehicles (registration_number, model, vehicle_type, created_at) VALUES (?, ?, ?, ?)",
-                (reg, model, vtype, now),
-            )
+        conn.execute(
+            "INSERT INTO vehicles (registration_number, model, vehicle_type, created_at) VALUES (?, ?, ?, ?)",
+            (reg, model, vtype, now),
+        )
 
     conn.commit()
 
