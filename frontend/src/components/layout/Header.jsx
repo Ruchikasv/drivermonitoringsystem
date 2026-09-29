@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Search, Bell, Shield, User, LogOut } from 'lucide-react';
+import { Search, Shield, LogOut } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import NotificationDropdown from './NotificationDropdown';
 
 const PAGE_TITLES = {
   '/': { title: 'Fleet Overview', subtitle: 'Real-time driver activity, fatigue trends & alert tracking' },
@@ -73,17 +74,8 @@ export default function Header() {
           />
         </div>
 
-        {/* Notification Bell */}
-        <div className="relative">
-          <button
-            type="button"
-            className="p-2 rounded-lg text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors relative"
-            title="Active Notifications"
-          >
-            <Bell className="w-4 h-4" />
-            <span className="w-2 h-2 rounded-full bg-red-500 absolute top-1.5 right-1.5 ring-2 ring-white" />
-          </button>
-        </div>
+        {/* Notification Bell Dropdown */}
+        <NotificationDropdown />
 
         {/* Vertical Divider */}
         <div className="h-6 w-px bg-slate-200" />

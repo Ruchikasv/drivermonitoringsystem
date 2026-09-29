@@ -12,6 +12,7 @@ import OwnerMonitoringPage from './pages/owner/OwnerMonitoringPage';
 import OwnerIncidentsPage from './pages/owner/OwnerIncidentsPage';
 import TripsPage from './pages/TripsPage';
 import AnalyticsPage from './pages/AnalyticsPage';
+import SimulationPage from './pages/developer/SimulationPage';
 import SettingsPage from './pages/SettingsPage';
 import NotFoundPage from './pages/NotFoundPage';
 
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="alerts" element={<OwnerIncidentsPage />} />
             <Route path="trips" element={<TripsPage />} />
             <Route path="analytics" element={<AnalyticsPage />} />
+            <Route path="simulation" element={<SimulationPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="404" element={<NotFoundPage />} />
             <Route path="*" element={<Navigate to="/404" replace />} />

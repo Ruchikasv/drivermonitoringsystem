@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { name: 'Incidents & Evidence', path: '/incidents', icon: Camera },
   { name: 'Trips', path: '/trips', icon: Route },
   { name: 'Analytics', path: '/analytics', icon: BarChart3 },
+  { name: 'Simulation', path: '/simulation', icon: AlertTriangle },
   { name: 'Settings', path: '/settings', icon: Settings },
 ];
 

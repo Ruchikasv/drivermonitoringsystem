@@ -4,8 +4,6 @@ import {
   ShieldCheck,
   AlertTriangle,
   Flame,
-  Volume2,
-  VolumeX,
   StopCircle,
   Pause,
   Play,
@@ -51,7 +49,6 @@ export default function DriverMonitoringPage() {
     p_critical_soon: null,
   });
   const [currentAlert, setCurrentAlert] = useState(null);
-  const [audioEnabled, setAudioEnabled] = useState(true);
   const [tripSummary, setTripSummary] = useState(null);
   const [showEndModal, setShowEndModal] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -64,15 +61,6 @@ export default function DriverMonitoringPage() {
   const captureIntervalRef = useRef(null);
   const isSendingRef = useRef(false);
   const startTimeRef = useRef(Date.now());
-
-  const handleAudioToggle = () => {
-    const nextState = !audioEnabled;
-    setAudioEnabled(nextState);
-    soundManager.setEnabled(nextState);
-    if (nextState) {
-      soundManager.unlockAudio();
-    }
-  };
 
   const stopWebcam = () => {
     if (captureIntervalRef.current) {
@@ -381,32 +369,6 @@ export default function DriverMonitoringPage() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Temporary Manual Verification Button for Level 3 Siren */}
-          <button
-            onClick={() => {
-              if (soundManager.isCriticalPlaying) {
-                soundManager.stopCriticalSiren();
-              } else {
-                soundManager.unlockAudio();
-                soundManager.playAlert('critical');
-              }
-            }}
-            className="px-3.5 py-2 text-xs font-extrabold rounded-xl border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 transition active:scale-95 shadow-sm"
-            title="Development verification helper: toggles continuous Level 3 critical siren"
-          >
-            🚨 Test Critical Siren
-          </button>
-
-          <button
-            onClick={handleAudioToggle}
-            className={`p-2.5 rounded-xl border transition ${
-              audioEnabled ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' : 'bg-slate-800 border-slate-700 text-slate-500'
-            }`}
-            title={audioEnabled ? 'Audio Alarms Active' : 'Audio Muted'}
-          >
-            {audioEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
-          </button>
-
           {isPaused ? (
             <button
               disabled={pausing}

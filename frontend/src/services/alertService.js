@@ -6,9 +6,9 @@ export const alertService = {
     return response.data || [];
   },
 
-  async getRecentAlerts(limit = 5) {
-    const alerts = await this.getAlerts();
-    return alerts.slice(0, limit);
+  async getRecentAlerts(limit = 10) {
+    const response = await apiClient.get('/alerts', { params: { limit } });
+    return response.data || [];
   }
 };
 
