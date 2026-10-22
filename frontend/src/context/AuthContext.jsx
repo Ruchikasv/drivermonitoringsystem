@@ -10,6 +10,11 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     let mounted = true;
     const verifyAuth = async () => {
+      // Skip owner auth verification on driver pages (no owner token expected)
+      if (window.location.pathname.startsWith('/driver')) {
+        if (mounted) setLoading(false);
+        return;
+      }
       try {
         const profile = await authService.getProfile();
         if (mounted) {

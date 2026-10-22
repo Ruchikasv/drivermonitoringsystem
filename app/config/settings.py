@@ -120,6 +120,47 @@ CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "")
 
 
 
+# ---------------------------------------------------------------------------
+# Distraction Detection Settings
+# ---------------------------------------------------------------------------
+
+DISTRACTION_MIN_DURATION_SECONDS: float = float(
+    os.getenv("DMS_DISTRACTION_MIN_DURATION", "2.0")
+)
+DISTRACTION_ALERT_COOLDOWN_SECONDS: float = float(
+    os.getenv("DMS_DISTRACTION_COOLDOWN", "5.0")
+)
+DISTRACTION_PITCH_THRESHOLD_DEG: float = float(
+    os.getenv("DMS_DISTRACTION_PITCH_THRESHOLD", "-10.0")
+)
+DISTRACTION_CONFIDENCE_THRESHOLD: float = float(
+    os.getenv("DMS_DISTRACTION_CONFIDENCE_THRESHOLD", "0.35")
+)
+DISTRACTION_MIN_CONSISTENT_FRAMES: int = int(
+    os.getenv("DMS_DISTRACTION_MIN_CONSISTENT_FRAMES", "3")
+)
+DISTRACTION_DETECTION_INTERVAL_FRAMES: int = int(
+    os.getenv("DMS_DISTRACTION_INTERVAL_FRAMES", "3")
+)
+DISTRACTION_GRACE_PERIOD_SECONDS: float = float(
+    os.getenv("DMS_DISTRACTION_GRACE_PERIOD", "0.4")
+)
+
+# ---------------------------------------------------------------------------
+# MQ-3 Alcohol Sensor & Prototype Lockout Settings
+# ---------------------------------------------------------------------------
+
+MQ3_SERIAL_PORT: str = os.getenv("DMS_MQ3_PORT", "COM7")
+MQ3_BAUD_RATE: int = int(os.getenv("DMS_MQ3_BAUD", "9600"))
+MQ3_WARMUP_SECONDS: float = float(os.getenv("DMS_MQ3_WARMUP", "15.0"))
+MQ3_CALIBRATION_SAMPLES: int = int(os.getenv("DMS_MQ3_CALIBRATION_SAMPLES", "10"))
+MQ3_ALCOHOL_THRESHOLD: int = int(os.getenv("DMS_MQ3_THRESHOLD", "200"))
+MQ3_HYSTERESIS: int = int(os.getenv("DMS_MQ3_HYSTERESIS", "30"))
+MQ3_PERSISTENCE_COUNT: int = int(os.getenv("DMS_MQ3_PERSISTENCE", "3"))
+MQ3_SIMULATION_MODE: bool = os.getenv("DMS_MQ3_SIMULATION", "false").lower() in ("true", "1", "yes")
+OWNER_CONTACT_PHONE: str = os.getenv("DMS_OWNER_CONTACT_PHONE", "")
+
+
 def validate_security_config() -> None:
     """Validate critical security configurations on backend startup."""
     if ENVIRONMENT == "production":
@@ -131,3 +172,4 @@ def validate_security_config() -> None:
         if DATABASE_URL.startswith("sqlite"):
             # Warn or enforce production database
             pass
+

@@ -1,12 +1,14 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, UserCheck, UserPlus, ArrowLeft, Truck, AlertTriangle } from 'lucide-react';
+import AlcoholSafetyWarning from '../../components/driver/AlcoholSafetyWarning';
 
 export default function DriverPortalPage() {
   const navigate = useNavigate();
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-6 sm:p-12 font-sans selection:bg-cyan-500 selection:text-white">
+      <AlcoholSafetyWarning showBadge={false} />
       {/* Top Header */}
       <header className="flex items-center justify-between border-b border-slate-800/80 pb-6">
         <div className="flex items-center gap-3">

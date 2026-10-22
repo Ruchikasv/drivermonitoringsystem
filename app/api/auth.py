@@ -310,6 +310,14 @@ def authenticate_driver(body: AuthenticateRequest, conn=Depends(_get_db)):
             vehicle_model = vehicle.model
             vehicle_type = vehicle.vehicle_type
 
+    # Enforce alcohol prototype lockout
+    from app.hardware.alcohol_sensor import mq3_serial_reader
+    if mq3_serial_reader.is_locked():
+        raise HTTPException(
+            status_code=423,
+            detail="VEHICLE OPERATION LOCKED OUT: Potential alcohol detected. Trip start is restricted pending authorized owner resolution.",
+        )
+
     # Start or retrieve active monitoring session with session_token
     m_repo = MonitoringRepository(conn)
     session_id = m_repo.create_session(driver_id=driver_id, vehicle_id=vehicle_id, owner_id=driver_owner_id)

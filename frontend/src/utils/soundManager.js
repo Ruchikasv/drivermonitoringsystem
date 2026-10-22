@@ -33,6 +33,14 @@ export class SoundManager {
       warning: 2500,  // Level 2: 2.5s cooldown (one-shot)
       critical: 1500, // Level 3: continuous siren
     };
+
+    // Distraction alert state
+    this.lastDistractionPlayTime = 0;
+    this.distractionCooldown = 3500; // 3.5s cooldown for distraction beeps
+
+    // Dedicated Alcohol Safety Lockout Alarm Channel
+    this.isAlcoholAlarmPlaying = false;
+    this.alcoholTimer = null;
   }
 
   /**
@@ -91,6 +99,7 @@ export class SoundManager {
    */
   stop() {
     this.stopCriticalSiren();
+    this.stopAlcoholAlarm();
     if (this.currentOscillator) {
       try {
         this.currentOscillator.stop();
@@ -355,9 +364,117 @@ export class SoundManager {
     }
   }
 
+  /**
+   * Play an audible beep for confirmed driver distraction (e.g. phone visual distraction).
+   * Operates independently from drowsiness tiers so it does not reset or interfere with
+   * drowsiness/fatigue monitoring.
+   *
+   * @param {boolean} force - If true, bypasses cooldown
+   */
+  playDistractionBeep(force = false) {
+    if (!this.enabled) return;
+
+    const now = Date.now();
+    if (!force && (now - this.lastDistractionPlayTime < this.distractionCooldown)) {
+      return;
+    }
+
+    this.lastDistractionPlayTime = now;
+    console.log('[SoundManager] playDistractionBeep triggered');
+
+    // Haptic vibration feedback if supported
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try {
+        navigator.vibrate([150, 75, 150]);
+      } catch {}
+    }
+
+    const ctx = this._getAudioContext();
+    if (!ctx) return;
+
+    try {
+      const t0 = ctx.currentTime;
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+
+      // Sharp, distinct double-beep chime (1046Hz -> 1318Hz, C6 to E6)
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(1046, t0);
+      osc.frequency.setValueAtTime(1318, t0 + 0.12);
+
+      gain.gain.setValueAtTime(0.35, t0);
+      gain.gain.setValueAtTime(0.35, t0 + 0.22);
+      gain.gain.exponentialRampToValueAtTime(0.005, t0 + 0.30);
+
+      osc.connect(gain);
+      osc.start(t0);
+      osc.stop(t0 + 0.30);
+    } catch (err) {
+      console.warn('[SoundManager] Distraction beep audio error:', err);
+    }
+  }
+
+  /**
+   * Start continuous repeating audio alarm for active MQ-3 alcohol lockout event.
+   * Distinct, urgent alternating two-tone alarm pulse (880Hz -> 587Hz).
+   * Operates on an independent channel from drowsiness siren and distraction beeps.
+   */
+  startAlcoholAlarm() {
+    if (!this.enabled || this.isAlcoholAlarmPlaying) return;
+    this.isAlcoholAlarmPlaying = true;
+    console.log('[SoundManager] Starting MQ-3 alcohol safety alarm');
+
+    const ctx = this._getAudioContext();
+    if (!ctx) return;
+
+    const playPulse = () => {
+      if (!this.isAlcoholAlarmPlaying) return;
+      try {
+        const t0 = ctx.currentTime;
+        const gain = ctx.createGain();
+        gain.connect(ctx.destination);
+
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        // Alternating urgent two-tone alarm (880Hz down to 587Hz)
+        osc.frequency.setValueAtTime(880, t0);
+        osc.frequency.setValueAtTime(587, t0 + 0.15);
+
+        gain.gain.setValueAtTime(0.4, t0);
+        gain.gain.setValueAtTime(0.4, t0 + 0.28);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
+
+        osc.connect(gain);
+        osc.start(t0);
+        osc.stop(t0 + 0.35);
+      } catch (err) {
+        console.warn('[SoundManager] Alcohol alarm pulse error:', err);
+      }
+    };
+
+    // Play first pulse immediately, then repeat every 400ms
+    playPulse();
+    this.alcoholTimer = setInterval(playPulse, 400);
+  }
+
+  /**
+   * Stop MQ-3 alcohol safety alarm immediately (e.g. driver Space bar acknowledgement).
+   */
+  stopAlcoholAlarm() {
+    if (!this.isAlcoholAlarmPlaying && !this.alcoholTimer) return;
+    console.log('[SoundManager] Stopping MQ-3 alcohol safety alarm');
+    this.isAlcoholAlarmPlaying = false;
+    if (this.alcoholTimer) {
+      clearInterval(this.alcoholTimer);
+      this.alcoholTimer = null;
+    }
+  }
+
   reset() {
     this.lastPlayedTier = null;
     this.lastPlayTime = 0;
+    this.lastDistractionPlayTime = 0;
     this.stop();
   }
 }

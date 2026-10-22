@@ -57,8 +57,13 @@ frontend/.env.local
 data/evidence/
 data/logs/
 data/test_pg*
+data/calibration/
+data/cnn_dataset/
 scratch/
 *.mp4
 app/evidence/
 
-
+# === CNN training artifacts ===
+training/eye_cnn/dataset/
+training/eye_cnn/output/
+*.onnx

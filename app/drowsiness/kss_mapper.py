@@ -39,6 +39,7 @@ def rule_based_kss(
     yawn_rate_per_min: float = 0.0,
     head_nod_events_recent: int = 0,
     sustained_eye_closure_seconds: float = 0.0,
+    cnn_p_sleepy: float = 0.0,
 ) -> float:
     """
     Transparent weighted composite -> KSS (1-9), explainable so it can be
@@ -75,6 +76,14 @@ def rule_based_kss(
     score += _clamp(microsleep_count_recent / 2.0, 0, 1) * 2.0
     score += _clamp(yawn_rate_per_min / 2.0, 0, 1) * 1.0
     score += _clamp(head_nod_events_recent / 2.0, 0, 1) * 1.5
+
+    # 5. CNN P(SLEEPY) fusion
+    # Calibration (2026-09-29) showed the CNN fires during yawning/head nods
+    # at the 0.5 threshold (10.7% FP rate). Raising to 0.7 cuts FP to 1.4%
+    # while keeping the CNN as a confirming signal for genuine drowsiness
+    # (PERCLOS alone already drives KSS to ~4.5 for sustained eye closure).
+    if cnn_p_sleepy > 0.7:
+        score += (cnn_p_sleepy - 0.7) * 2.0  # Up to +0.6 to the score
 
     return round(_clamp(score, 1.0, 9.0), 2)
 

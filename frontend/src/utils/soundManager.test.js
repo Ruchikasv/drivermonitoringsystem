@@ -233,4 +233,80 @@ test('SoundManager - Level 3 Critical Audio Lifecycle & Transitions', async (t) 
 
     sm.stop();
   });
+
+  await t.test('10. Distraction beep plays independently and obeys cooldown', () => {
+    const sm = new SoundManager();
+    assert.equal(sm.lastDistractionPlayTime, 0);
+
+    // Initial distraction trigger plays beep
+    sm.playDistractionBeep();
+    const firstPlayTime = sm.lastDistractionPlayTime;
+    assert.ok(firstPlayTime > 0);
+
+    // Immediate second trigger within cooldown window is ignored
+    sm.playDistractionBeep();
+    assert.equal(sm.lastDistractionPlayTime, firstPlayTime);
+
+    // Reset clears distraction timestamp
+    sm.reset();
+    assert.equal(sm.lastDistractionPlayTime, 0);
+  });
+
+  await t.test('11. Distraction beep does not cancel or interfere with critical drowsiness siren', () => {
+    const sm = new SoundManager();
+    sm.playAlert('critical');
+    assert.equal(sm.isCriticalPlaying, true);
+
+    // Distraction beep triggered during critical drowsiness
+    sm.playDistractionBeep();
+    // Siren MUST remain active and not cancelled
+    assert.equal(sm.isCriticalPlaying, true);
+    assert.notEqual(sm.criticalCarrierOsc, null);
+
+    sm.stop();
+    assert.equal(sm.isCriticalPlaying, false);
+  });
+
+  await t.test('12. Alcohol safety alarm starts, prevents duplicate loops, and stops cleanly', () => {
+    const sm = new SoundManager();
+    assert.equal(sm.isAlcoholAlarmPlaying, false);
+
+    // Start alcohol alarm
+    sm.startAlcoholAlarm();
+    assert.equal(sm.isAlcoholAlarmPlaying, true);
+    assert.ok(sm.alcoholTimer !== null);
+
+    const initialTimer = sm.alcoholTimer;
+
+    // Repeated call must not create second timer or duplicate loop
+    sm.startAlcoholAlarm();
+    assert.equal(sm.alcoholTimer, initialTimer);
+
+    // Stop alcohol alarm (driver Space bar acknowledgement)
+    sm.stopAlcoholAlarm();
+    assert.equal(sm.isAlcoholAlarmPlaying, false);
+    assert.equal(sm.alcoholTimer, null);
+  });
+
+  await t.test('13. Alcohol alarm operates on an independent channel from drowsiness siren', () => {
+    const sm = new SoundManager();
+
+    // Critical drowsiness siren starts
+    sm.playAlert('critical');
+    assert.equal(sm.isCriticalPlaying, true);
+
+    // Alcohol alarm also starts
+    sm.startAlcoholAlarm();
+    assert.equal(sm.isAlcoholAlarmPlaying, true);
+    assert.equal(sm.isCriticalPlaying, true);
+
+    // Driver silences alcohol alarm with Space
+    sm.stopAlcoholAlarm();
+    assert.equal(sm.isAlcoholAlarmPlaying, false);
+    // Drowsiness siren is still playing
+    assert.equal(sm.isCriticalPlaying, true);
+
+    sm.stop();
+    assert.equal(sm.isCriticalPlaying, false);
+  });
 });

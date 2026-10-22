@@ -41,11 +41,14 @@ def list_alerts(
     driver_id: Optional[int] = Query(None),
     level: Optional[int] = Query(None),
     search: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
     repos=Depends(_get_repos),
     current_owner: OwnerRecord = Depends(get_current_owner),
 ):
     """List all monitoring incidents as alert records for the frontend."""
     conn, m_repo, d_repo, v_repo = repos
+
+    max_limit = limit if (limit and limit > 0) else 200
 
     # Get incidents scoped to owner
     if driver_id and driver_id != "ALL":
@@ -53,8 +56,10 @@ def list_alerts(
         if driver_check is None:
             return []
         incidents = m_repo.get_incidents_by_driver(int(driver_id), owner_id=current_owner.owner_id)
+        if limit and limit > 0:
+            incidents = incidents[:limit]
     else:
-        incidents = m_repo.get_all_incidents(owner_id=current_owner.owner_id, limit=200)
+        incidents = m_repo.get_all_incidents(owner_id=current_owner.owner_id, limit=max_limit)
 
     alerts = []
     # Cache driver/vehicle lookups

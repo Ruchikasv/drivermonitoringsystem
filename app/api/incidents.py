@@ -13,7 +13,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -58,6 +58,13 @@ class IncidentResponse(BaseModel):
     head_pitch_deg: Optional[float]
     evidence_path: Optional[str]
     has_evidence: bool
+    distraction_type: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    raw_evidence_path: Optional[str] = None
+    has_raw_evidence: bool = False
+    warning_evidence_path: Optional[str] = None
+    has_warning_evidence: bool = False
+    evidence_status: str = "NO_EVIDENCE"  # "AVAILABLE", "NOT_CAPTURED", "REMOVED"
 
 
 class SafetyRatingResponse(BaseModel):
@@ -74,21 +81,44 @@ class SafetyRatingResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _to_response(inc) -> IncidentResponse:
-    full_path = os.path.join(str(settings.PROJECT_ROOT), inc.evidence_path) if inc.evidence_path else None
+    primary_rel = inc.evidence_path
+    full_path = os.path.join(str(settings.PROJECT_ROOT), primary_rel) if primary_rel else None
     file_exists = bool(full_path and os.path.exists(full_path))
-    if inc.evidence_path and not file_exists:
+
+    raw_evidence_path: Optional[str] = None
+    has_raw_evidence: bool = False
+    warning_evidence_path: Optional[str] = None
+    has_warning_evidence: bool = False
+
+    if not primary_rel:
+        evidence_status = "NOT_CAPTURED"
+    elif not file_exists:
+        evidence_status = "REMOVED"
         logger.warning(
-            "[INCIDENTS] has_evidence=False for incident %s: evidence_path=%r resolved to %r which does not exist",
+            "[INCIDENTS] Evidence file removed/missing for incident %s: path=%r",
             inc.incident_id,
-            inc.evidence_path,
-            full_path,
+            primary_rel,
         )
-    elif inc.evidence_path and file_exists:
-        logger.debug(
-            "[INCIDENTS] has_evidence=True for incident %s: %r exists",
-            inc.incident_id,
-            full_path,
-        )
+    else:
+        evidence_status = "AVAILABLE"
+        if "_alcohol_warning.jpg" in primary_rel:
+            warning_evidence_path = primary_rel
+            has_warning_evidence = True
+            raw_rel = primary_rel.replace("_alcohol_warning.jpg", "_alcohol_raw.jpg")
+            if os.path.exists(os.path.join(str(settings.PROJECT_ROOT), raw_rel)):
+                raw_evidence_path = raw_rel
+                has_raw_evidence = True
+        elif "_alcohol_raw.jpg" in primary_rel:
+            raw_evidence_path = primary_rel
+            has_raw_evidence = True
+            warn_rel = primary_rel.replace("_alcohol_raw.jpg", "_alcohol_warning.jpg")
+            if os.path.exists(os.path.join(str(settings.PROJECT_ROOT), warn_rel)):
+                warning_evidence_path = warn_rel
+                has_warning_evidence = True
+        else:
+            warning_evidence_path = primary_rel
+            has_warning_evidence = True
+
     return IncidentResponse(
         incident_id=inc.incident_id,
         session_id=inc.session_id,
@@ -104,6 +134,13 @@ def _to_response(inc) -> IncidentResponse:
         head_pitch_deg=inc.head_pitch_deg,
         evidence_path=inc.evidence_path,
         has_evidence=file_exists,
+        distraction_type=getattr(inc, "distraction_type", None),
+        duration_seconds=getattr(inc, "duration_seconds", None),
+        raw_evidence_path=raw_evidence_path,
+        has_raw_evidence=has_raw_evidence,
+        warning_evidence_path=warning_evidence_path,
+        has_warning_evidence=has_warning_evidence,
+        evidence_status=evidence_status,
     )
 
 
@@ -178,10 +215,11 @@ def get_session_incidents(
 @router.get("/{incident_id}/evidence")
 def get_evidence(
     incident_id: int,
+    type: str = Query("primary", description="'primary', 'warning', or 'raw'"),
     repos=Depends(_get_repos),
     current_owner: OwnerRecord = Depends(get_current_owner),
 ):
-    """Serve the evidence screenshot JPEG for an incident, validating owner access."""
+    """Serve the evidence screenshot JPEG for an incident, validating owner access and supporting raw vs warning views."""
     conn, repo, d_repo = repos
     incident = repo.get_incident(incident_id, owner_id=current_owner.owner_id)
     if not incident:
@@ -189,11 +227,26 @@ def get_evidence(
     if not incident.evidence_path:
         raise HTTPException(status_code=404, detail="No evidence captured for this incident")
 
-    full_path = os.path.join(str(settings.PROJECT_ROOT), incident.evidence_path)
+    target_rel = incident.evidence_path
+    if type == "raw":
+        if "_alcohol_warning.jpg" in incident.evidence_path:
+            target_rel = incident.evidence_path.replace("_alcohol_warning.jpg", "_alcohol_raw.jpg")
+        elif "_alcohol_raw.jpg" in incident.evidence_path:
+            target_rel = incident.evidence_path
+        else:
+            raise HTTPException(status_code=404, detail="Raw driver frame not captured separately for this incident")
+    elif type == "warning":
+        if "_alcohol_raw.jpg" in incident.evidence_path:
+            target_rel = incident.evidence_path.replace("_alcohol_raw.jpg", "_alcohol_warning.jpg")
+        else:
+            target_rel = incident.evidence_path
+
+    full_path = os.path.join(str(settings.PROJECT_ROOT), target_rel)
     logger.info(
-        "[EVIDENCE API] Serving evidence for incident %s: rel=%r full=%r exists=%s",
+        "[EVIDENCE API] Serving evidence for incident %s (type=%s): rel=%r full=%r exists=%s",
         incident_id,
-        incident.evidence_path,
+        type,
+        target_rel,
         full_path,
         os.path.exists(full_path),
     )

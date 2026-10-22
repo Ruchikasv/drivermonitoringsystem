@@ -189,6 +189,19 @@ def get_connection(db_path: Union[Path, str, None] = None) -> Any:
     return conn
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def get_connection_context(db_path: Union[Path, str, None] = None):
+    """Context manager that provides a database connection and ensures it is closed."""
+    conn = get_connection(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 
 def init_db(conn: Any) -> None:
     """
@@ -303,20 +316,22 @@ def init_db(conn: Any) -> None:
     cursor.execute(
         f"""
         CREATE TABLE IF NOT EXISTS monitoring_incidents (
-            incident_id    {pk_auto},
-            session_id     INTEGER NOT NULL REFERENCES monitoring_sessions(session_id),
-            owner_id       INTEGER REFERENCES owners(owner_id),
-            driver_id      INTEGER NOT NULL,
-            vehicle_id     INTEGER,
-            timestamp      TEXT    NOT NULL,
-            event_type     TEXT    NOT NULL,
-            alert_level    INTEGER NOT NULL,
-            kss_score      REAL,
-            ear            REAL,
-            mar            REAL,
-            perclos        REAL,
-            head_pitch_deg REAL,
-            evidence_path  TEXT
+            incident_id      {pk_auto},
+            session_id       INTEGER NOT NULL REFERENCES monitoring_sessions(session_id),
+            owner_id         INTEGER REFERENCES owners(owner_id),
+            driver_id        INTEGER NOT NULL,
+            vehicle_id       INTEGER,
+            timestamp        TEXT    NOT NULL,
+            event_type       TEXT    NOT NULL,
+            alert_level      INTEGER NOT NULL,
+            kss_score        REAL,
+            ear              REAL,
+            mar              REAL,
+            perclos          REAL,
+            head_pitch_deg   REAL,
+            evidence_path    TEXT,
+            distraction_type TEXT,
+            duration_seconds REAL
         )
         """
     )
@@ -366,6 +381,10 @@ def init_db(conn: Any) -> None:
         inc_cols = {row["name"] for row in cursor.execute("PRAGMA table_info(monitoring_incidents)").fetchall()}
         if "owner_id" not in inc_cols:
             cursor.execute("ALTER TABLE monitoring_incidents ADD COLUMN owner_id INTEGER")
+        if "distraction_type" not in inc_cols:
+            cursor.execute("ALTER TABLE monitoring_incidents ADD COLUMN distraction_type TEXT")
+        if "duration_seconds" not in inc_cols:
+            cursor.execute("ALTER TABLE monitoring_incidents ADD COLUMN duration_seconds REAL")
 
         r_cols = {row["name"] for row in cursor.execute("PRAGMA table_info(driver_safety_ratings)").fetchall()}
         if "owner_id" not in r_cols:

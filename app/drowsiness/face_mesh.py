@@ -108,3 +108,42 @@ class FaceMeshDetector:
 
     def close(self):
         self.landmarker.close()
+
+
+def crop_eye(frame: np.ndarray, pts_px: np.ndarray, eye_indices: list, padding: float = 0.4):
+    """Calculate bounding box for eye landmarks, apply padding, and crop."""
+    eye_pts = pts_px[eye_indices]
+    x_min = np.min(eye_pts[:, 0])
+    x_max = np.max(eye_pts[:, 0])
+    y_min = np.min(eye_pts[:, 1])
+    y_max = np.max(eye_pts[:, 1])
+    
+    w = x_max - x_min
+    h = y_max - y_min
+    
+    cx = x_min + w / 2
+    cy = y_min + h / 2
+    
+    # Make it square with padding
+    side = max(w, h) * (1 + padding)
+    
+    x1 = int(cx - side / 2)
+    y1 = int(cy - side / 2)
+    x2 = int(cx + side / 2)
+    y2 = int(cy + side / 2)
+    
+    # Clip to frame boundaries
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(frame.shape[1], x2)
+    y2 = min(frame.shape[0], y2)
+    
+    crop = frame[y1:y2, x1:x2]
+    rect = (x1, y1, x2, y2)
+    return crop, rect
+
+def draw_landmarks(frame: np.ndarray, pts_px: np.ndarray, color=(0, 255, 0), radius=1):
+    """Draw face landmarks on the frame."""
+    for pt in pts_px:
+        cv2.circle(frame, (int(pt[0]), int(pt[1])), radius, color, -1)
+

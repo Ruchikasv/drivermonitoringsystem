@@ -219,3 +219,7 @@ This is a multi-phase system:
 - **Phase 3: Hardware Sensor Integration** (MQ-3 Alcohol Sensor & 3-Level Audio/Visual Alert Matrix)
 - **Phase 4: Backend API & Live WebSocket Streaming** (FastAPI Backend + Fleet Live Sync)
 
+.venv\Scripts\activate 
+uvicorn app.api.main:app --reload
+cd frontend
+npm run dev

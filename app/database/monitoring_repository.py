@@ -29,7 +29,7 @@ class MonitoringIncident:
     driver_id: int
     vehicle_id: Optional[int]
     timestamp: str
-    event_type: str          # 'nudge' | 'warning' | 'critical'
+    event_type: str          # 'nudge' | 'warning' | 'critical' | 'distraction'
     alert_level: int         # 1 | 2 | 3
     kss_score: Optional[float]
     ear: Optional[float]
@@ -38,6 +38,8 @@ class MonitoringIncident:
     head_pitch_deg: Optional[float]
     evidence_path: Optional[str]
     owner_id: Optional[int] = None
+    distraction_type: Optional[str] = None
+    duration_seconds: Optional[float] = None
 
 
 @dataclass
@@ -330,6 +332,8 @@ class MonitoringRepository:
         head_pitch_deg: Optional[float] = None,
         evidence_path: Optional[str] = None,
         owner_id: Optional[int] = None,
+        distraction_type: Optional[str] = None,
+        duration_seconds: Optional[float] = None,
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         if owner_id is None:
@@ -343,11 +347,11 @@ class MonitoringRepository:
             """
             INSERT INTO monitoring_incidents
               (session_id, driver_id, vehicle_id, owner_id, timestamp, event_type, alert_level,
-               kss_score, ear, mar, perclos, head_pitch_deg, evidence_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               kss_score, ear, mar, perclos, head_pitch_deg, evidence_path, distraction_type, duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (session_id, driver_id, vehicle_id, owner_id, now, event_type, alert_level,
-             kss_score, ear, mar, perclos, head_pitch_deg, evidence_path),
+             kss_score, ear, mar, perclos, head_pitch_deg, evidence_path, distraction_type, duration_seconds),
         )
         self._conn.commit()
         return cursor.lastrowid
@@ -437,6 +441,22 @@ class MonitoringRepository:
                 os.remove(full_path)
             except Exception:
                 pass
+
+        # Also remove companion raw or warning file if it was an alcohol lockout incident
+        if "_alcohol_warning.jpg" in incident.evidence_path:
+            raw_path = os.path.join(str(settings.PROJECT_ROOT), incident.evidence_path.replace("_alcohol_warning.jpg", "_alcohol_raw.jpg"))
+            if os.path.exists(raw_path):
+                try:
+                    os.remove(raw_path)
+                except Exception:
+                    pass
+        elif "_alcohol_raw.jpg" in incident.evidence_path:
+            warn_path = os.path.join(str(settings.PROJECT_ROOT), incident.evidence_path.replace("_alcohol_raw.jpg", "_alcohol_warning.jpg"))
+            if os.path.exists(warn_path):
+                try:
+                    os.remove(warn_path)
+                except Exception:
+                    pass
 
         cursor = self._conn.execute(
             "UPDATE monitoring_incidents SET evidence_path = NULL WHERE incident_id = ?",

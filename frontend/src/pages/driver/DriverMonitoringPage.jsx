@@ -13,9 +13,11 @@ import {
   Compass,
   CheckCircle2,
   Clock,
+  Smartphone,
 } from 'lucide-react';
 import { monitoringService } from '../../services/monitoringService';
 import { soundManager } from '../../utils/soundManager';
+import AlcoholSafetyWarning from '../../components/driver/AlcoholSafetyWarning';
 
 export default function DriverMonitoringPage() {
   const [searchParams] = useSearchParams();
@@ -37,7 +39,7 @@ export default function DriverMonitoringPage() {
     head_pitch: 0.0,
     head_yaw: 0.0,
     head_roll: 0.0,
-    face_detected: true,
+    face_detected: false,
     microsleep_active: false,
     yawn_active: false,
     head_nod_active: false,
@@ -53,6 +55,12 @@ export default function DriverMonitoringPage() {
   const [showEndModal, setShowEndModal] = useState(false);
   const [ending, setEnding] = useState(false);
   const [pausing, setPausing] = useState(false);
+  const [cameras, setCameras] = useState([]);
+  const [selectedCameraId, setSelectedCameraId] = useState('');
+  const [cameraType, setCameraType] = useState('rgb');
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugData, setDebugData] = useState(null);
+  const [fps, setFps] = useState(0);
 
   const wsRef = useRef(null);
   const videoRef = useRef(null);
@@ -61,12 +69,22 @@ export default function DriverMonitoringPage() {
   const captureIntervalRef = useRef(null);
   const isSendingRef = useRef(false);
   const startTimeRef = useRef(Date.now());
+  const cameraTypeRef = useRef('rgb');
+  const debugModeRef = useRef(false);
+  const framesCountRef = useRef(0);
+  const lastFpsTimeRef = useRef(Date.now());
+  const wsSentCountRef = useRef(0);
+  const wsRecvCountRef = useRef(0);
+
+  /** Detect if a camera label looks like a USB/IR/infrared camera. */
+  const detectIrCamera = (label) => {
+    if (!label) return false;
+    const l = label.toLowerCase();
+    return l.includes('ir') || l.includes('infrared') || l.includes('usb') || /\([0-9a-f]{4}:[0-9a-f]{4}\)/.test(l);
+  };
 
   const stopWebcam = () => {
-    if (captureIntervalRef.current) {
-      clearInterval(captureIntervalRef.current);
-      captureIntervalRef.current = null;
-    }
+    // DO NOT clear the capture interval here; it is tied to the WebSocket lifecycle.
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => {
         track.stop();
@@ -79,24 +97,34 @@ export default function DriverMonitoringPage() {
     setCameraReady(false);
   };
 
-  const startWebcam = async () => {
+  const startWebcam = async (deviceId = null) => {
     stopWebcam();
     setCameraError(null);
+    console.log('[DMS Camera] startWebcam called, deviceId:', deviceId);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+      const constraints = {
+        video: { width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
-      });
+      };
+      if (deviceId) {
+        constraints.video.deviceId = { exact: deviceId };
+      } else {
+        constraints.video.facingMode = 'user';
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
+      const track = stream.getVideoTracks()[0];
+      console.log('STREAM_STARTED', track?.label, 'settings:', track?.getSettings());
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.onloadedmetadata = () => {
           videoRef.current.play().catch(() => {});
+          console.log('VIDEO_READY', 'videoWidth:', videoRef.current.videoWidth, 'videoHeight:', videoRef.current.videoHeight, 'readyState:', videoRef.current.readyState);
           setCameraReady(true);
         };
       }
     } catch (err) {
-      console.error('Monitoring webcam error:', err);
+      console.error('[DMS Camera] Monitoring webcam error:', err);
       setCameraError('Unable to access monitoring webcam. Please ensure camera permissions are granted.');
     }
   };
@@ -124,7 +152,31 @@ export default function DriverMonitoringPage() {
     };
     checkInitialStatus();
 
-    startWebcam();
+    const getCameras = async () => {
+      try {
+        // Trigger camera permission (we immediately stop this temp stream)
+        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        tempStream.getTracks().forEach(t => t.stop());
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        console.log('[DMS Camera] Enumerated cameras:', videoDevices.map(d => ({ label: d.label, deviceId: d.deviceId })));
+        setCameras(videoDevices);
+        if (videoDevices.length > 0 && !selectedCameraId) {
+          const firstDevice = videoDevices[0];
+          const isIr = detectIrCamera(firstDevice.label);
+          setCameraType(isIr ? 'ir' : 'rgb');
+          cameraTypeRef.current = isIr ? 'ir' : 'rgb';
+          console.log('CAMERA_SELECTED', firstDevice.label, '| type:', isIr ? 'ir' : 'rgb');
+          setSelectedCameraId(firstDevice.deviceId);
+        } else {
+          startWebcam(); // fallback
+        }
+      } catch (err) {
+        console.error('[DMS Camera] Error enumerating devices', err);
+        startWebcam();
+      }
+    };
+    getCameras();
 
     const token = searchParams.get('token');
     const wsUrl = monitoringService.getWebSocketUrl(sessionId, token);
@@ -142,7 +194,7 @@ export default function DriverMonitoringPage() {
         if (!videoRef.current || ws.readyState !== WebSocket.OPEN) return;
         if (isSendingRef.current || ws.bufferedAmount > 0) return;
         const video = videoRef.current;
-        if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused) return;
+        if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused || video.readyState < 2) return;
 
         if (!canvasRef.current) {
           canvasRef.current = document.createElement('canvas');
@@ -152,15 +204,35 @@ export default function DriverMonitoringPage() {
         canvas.height = 480;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, 640, 480);
+        console.log('FRAME_CAPTURED');
 
         const b64 = canvas.toDataURL('image/jpeg', 0.60);
         isSendingRef.current = true;
-        ws.send(JSON.stringify({ frame: b64 }));
+        wsSentCountRef.current += 1;
+        
+        framesCountRef.current += 1;
+        const now = Date.now();
+        if (now - lastFpsTimeRef.current >= 1000) {
+          const currentFps = Math.round((framesCountRef.current * 1000) / (now - lastFpsTimeRef.current));
+          setFps(currentFps);
+          console.log(`[DMS Pipeline] FPS: ${currentFps} | Sent: ${wsSentCountRef.current} | Recv: ${wsRecvCountRef.current} | camera_type: ${cameraTypeRef.current} | videoW: ${video.videoWidth} videoH: ${video.videoHeight} readyState: ${video.readyState}`);
+          framesCountRef.current = 0;
+          lastFpsTimeRef.current = now;
+        }
+
+        ws.send(JSON.stringify({ 
+          frame: b64, 
+          camera_type: cameraTypeRef.current,
+          debug_mode: debugModeRef.current
+        }));
+        console.log('FRAME_SENT');
       }, 85);
     };
 
     ws.onmessage = (event) => {
       isSendingRef.current = false;
+      wsRecvCountRef.current += 1;
+      console.log('FRAME_RECEIVED');
       try {
         const data = JSON.parse(event.data);
 
@@ -187,6 +259,7 @@ export default function DriverMonitoringPage() {
 
         if (data.frame_b64) {
           setFrameB64(data.frame_b64);
+          console.log('PROCESSED_FRAME_RENDERED');
         }
 
         if (data.metrics) {
@@ -195,6 +268,17 @@ export default function DriverMonitoringPage() {
 
         if (data.fusion) {
           setFusion(data.fusion);
+        }
+
+        if (data.debug_data) {
+          setDebugData(data.debug_data);
+        }
+
+        // Sync camera type from backend response if provided
+        const responseCameraType = data.camera_type || data.fusion?.camera_type;
+        if (responseCameraType) {
+          setCameraType(responseCameraType);
+          cameraTypeRef.current = responseCameraType;
         }
 
         const isCriticalActive = Boolean(data.critical_active) && !data.is_paused;
@@ -207,8 +291,8 @@ export default function DriverMonitoringPage() {
             soundManager.stopCriticalSiren();
           }
 
-          // Handle one-shot warning / nudge alerts if present
-          if (data.alert && !data.is_paused) {
+          // Handle one-shot warning / nudge alerts if present (keep distraction alerts independent)
+          if (data.alert && !data.is_paused && data.alert.event_type !== "distraction") {
             if (data.alert.tier === "warning") {
               soundManager.playAlert("warning");
             } else if (data.alert.tier === "nudge") {
@@ -217,9 +301,16 @@ export default function DriverMonitoringPage() {
           }
         }
 
+        // Distraction alert audio (independent from drowsiness tiers)
+        // Repeat beep plays when triggered: true (initial alert and every 5s repeat interval)
+        const isDistractionTriggered = (data.distraction?.triggered || data.metrics?.distraction_triggered) && !data.is_paused;
+        if (isDistractionTriggered) {
+          soundManager.playDistractionBeep(true);
+        }
+
         if (data.alert && !data.is_paused) {
           setCurrentAlert(data.alert);
-        } else if (!isCriticalActive) {
+        } else if (!isCriticalActive && !data.metrics?.distraction_confirmed) {
           setCurrentAlert(null);
         }
       } catch (err) {
@@ -245,6 +336,20 @@ export default function DriverMonitoringPage() {
       }
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (selectedCameraId) {
+      // Also update camera type when switching cameras
+      const cam = cameras.find(c => c.deviceId === selectedCameraId);
+      if (cam) {
+        const isIr = detectIrCamera(cam.label);
+        setCameraType(isIr ? 'ir' : 'rgb');
+        cameraTypeRef.current = isIr ? 'ir' : 'rgb';
+        console.log('[DMS Camera] Camera switched to:', cam.label, '| type:', isIr ? 'ir' : 'rgb', '| deviceId:', selectedCameraId);
+      }
+      startWebcam(selectedCameraId);
+    }
+  }, [selectedCameraId]);
 
   const handlePauseTrip = async () => {
     setPausing(true);
@@ -311,8 +416,9 @@ export default function DriverMonitoringPage() {
   };
 
   const isCritical = !isPaused && (fusion.is_critical || currentAlert?.tier === 'critical' || metrics.microsleep_active);
-  const isWarning = !isPaused && !isCritical && (fusion.kss_now >= 6.0 || currentAlert?.tier === 'warning' || metrics.yawn_active);
-  const isNudge = !isPaused && !isCritical && !isWarning && (fusion.kss_now >= 4.5 || currentAlert?.tier === 'nudge' || metrics.perclos >= 0.20);
+  const isDistraction = !isPaused && !isCritical && (metrics.distraction_confirmed || currentAlert?.event_type === 'distraction');
+  const isWarning = !isPaused && !isCritical && !isDistraction && (fusion.kss_now >= 6.0 || currentAlert?.tier === 'warning' || metrics.yawn_active);
+  const isNudge = !isPaused && !isCritical && !isWarning && !isDistraction && (fusion.kss_now >= 4.5 || currentAlert?.tier === 'nudge' || metrics.perclos >= 0.20);
 
   let statusBg = 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400';
   let statusTitle = 'SAFE & ATTENTIVE';
@@ -329,6 +435,11 @@ export default function DriverMonitoringPage() {
     statusTitle = 'LEVEL 3 — CRITICAL DROWSINESS';
     statusSubtitle = 'IMMEDIATE ATTENTION REQUIRED';
     statusIcon = <Flame className="w-5 h-5 text-rose-400 animate-bounce" />;
+  } else if (isDistraction) {
+    statusBg = 'bg-purple-500/20 border-purple-500/50 text-purple-300 animate-pulse';
+    statusTitle = 'DISTRACTION DETECTED — PHONE USAGE';
+    statusSubtitle = 'Driver looking down at mobile phone — Keep eyes on the road!';
+    statusIcon = <Smartphone className="w-5 h-5 text-purple-400 animate-bounce" />;
   } else if (isWarning) {
     statusBg = 'bg-amber-500/15 border-amber-500/40 text-amber-400';
     statusTitle = 'LEVEL 2 — DROWSINESS WARNING';
@@ -344,9 +455,33 @@ export default function DriverMonitoringPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 sm:p-6 font-sans select-none">
-      {/* Top Telemetry Header */}
-      <header className="flex items-center justify-between bg-slate-900/80 border border-slate-800/80 rounded-2xl px-5 py-3.5 backdrop-blur">
+      <header className="flex justify-between items-center bg-slate-900 border border-slate-800 rounded-3xl p-3 sm:px-6 shadow-2xl mb-4">
         <div className="flex items-center gap-3">
+          <select 
+            className="bg-slate-800 text-xs text-white px-2 py-1 rounded border border-slate-700 outline-none" 
+            value={selectedCameraId}
+            onChange={(e) => {
+              const newDeviceId = e.target.value;
+              const label = e.target.options[e.target.selectedIndex].text;
+              const isIr = detectIrCamera(label);
+              console.log('[DMS Camera] User selected camera:', label, '| deviceId:', newDeviceId, '| IR:', isIr);
+              setCameraType(isIr ? 'ir' : 'rgb');
+              cameraTypeRef.current = isIr ? 'ir' : 'rgb';
+              setSelectedCameraId(newDeviceId);
+            }}
+          >
+            {cameras.map(cam => (
+              <option key={cam.deviceId} value={cam.deviceId}>{cam.label || `Camera ${cam.deviceId}`}</option>
+            ))}
+          </select>
+          <button onClick={() => {
+             const newMode = !debugMode;
+             setDebugMode(newMode);
+             debugModeRef.current = newMode;
+          }} className={`text-xs px-2 py-1 rounded border border-slate-700 font-bold transition ${debugMode ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
+             IR Debug
+          </button>
+          <AlcoholSafetyWarning sessionId={sessionId} showBadge={true} />
           <div className={`w-3 h-3 rounded-full ${
             !connected ? 'bg-rose-500' : isPaused ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 shadow-lg shadow-emerald-500/50 animate-pulse'
           }`} />
@@ -423,8 +558,13 @@ export default function DriverMonitoringPage() {
               playsInline
               autoPlay
               muted
-              className={`w-full h-full object-cover transform -scale-x-100 ${cameraReady ? 'block' : 'hidden'}`}
+              className="hidden"
             />
+            {frameB64 ? (
+              <img src={`data:image/jpeg;base64,${frameB64}`} className="w-full h-full object-cover" />
+            ) : (
+              <div className="text-slate-500 text-sm font-semibold">Awaiting processed frame...</div>
+            )}
 
             {cameraError ? (
               <div className="flex flex-col items-center text-rose-400 text-sm gap-3 p-6 text-center">
@@ -466,6 +606,16 @@ export default function DriverMonitoringPage() {
                   <Compass className="w-3.5 h-3.5" /> HEAD NODDING FORWARD
                 </span>
               )}
+              {metrics.distraction_confirmed && (
+                <span className="px-3 py-1 bg-purple-600 text-white font-bold text-xs rounded-lg shadow-lg animate-pulse flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5" /> PROLONGED PHONE DISTRACTION ({metrics.distraction_duration ? metrics.distraction_duration.toFixed(1) : '2.0'}s)
+                </span>
+              )}
+              {!metrics.distraction_confirmed && metrics.distraction_active && (
+                <span className="px-3 py-1 bg-amber-600/90 text-white font-semibold text-xs rounded-lg shadow-lg flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5" /> PHONE DISTRACTION DETECTING ({metrics.distraction_duration ? metrics.distraction_duration.toFixed(1) : '0.0'}s)
+                </span>
+              )}
             </div>
 
             {/* Paused Overlay */}
@@ -488,9 +638,61 @@ export default function DriverMonitoringPage() {
               </div>
             )}
 
+            {debugMode && debugData && (
+              <div className="absolute left-4 bottom-4 bg-black/90 p-4 rounded-xl border-2 border-emerald-500/50 text-[10px] font-mono text-cyan-400 z-20 flex flex-col gap-3 shadow-2xl min-w-[300px]">
+                 <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+                   <div className="font-bold text-emerald-400 tracking-wider">IR HARDWARE VALIDATION</div>
+                   <div className="bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded text-[9px] animate-pulse">LIVE</div>
+                 </div>
+                 
+                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-slate-800 pb-2">
+                   <div>FACE DETECTED: <span className={metrics.face_detected ? "text-emerald-400" : "text-rose-400"}>{metrics.face_detected ? 'YES' : 'NO'}</span></div>
+                   <div>FPS: <span className="text-white">{fps}</span></div>
+                   <div>EAR: <span className="text-white">{metrics.ear?.toFixed(3)}</span></div>
+                   <div>MAR: <span className="text-white">{metrics.mar?.toFixed(3)}</span></div>
+                   <div>PERCLOS: <span className="text-white">{(metrics.perclos * 100).toFixed(1)}%</span></div>
+                   <div>PITCH: <span className="text-white">{metrics.head_pitch?.toFixed(1)}°</span></div>
+                 </div>
+
+                 <div className="flex gap-4 border-b border-slate-800 pb-2 justify-center">
+                   <div className="text-center">
+                     <div className="text-slate-500 mb-1 text-[9px] tracking-wider">LEFT EYE CROP</div>
+                     {debugData.left_eye ? <img src={`data:image/jpeg;base64,${debugData.left_eye}`} className="w-20 h-20 object-cover border border-slate-700 mx-auto rounded" /> : <div className="w-20 h-20 bg-slate-800 mx-auto rounded" />}
+                     <div className="mt-1">P: <span className="text-white">{debugData.cnn_p_left !== undefined ? debugData.cnn_p_left.toFixed(3) : '-'}</span></div>
+                   </div>
+                   <div className="text-center">
+                     <div className="text-slate-500 mb-1 text-[9px] tracking-wider">RIGHT EYE CROP</div>
+                     {debugData.right_eye ? <img src={`data:image/jpeg;base64,${debugData.right_eye}`} className="w-20 h-20 object-cover border border-slate-700 mx-auto rounded" /> : <div className="w-20 h-20 bg-slate-800 mx-auto rounded" />}
+                     <div className="mt-1">P: <span className="text-white">{debugData.cnn_p_right !== undefined ? debugData.cnn_p_right.toFixed(3) : '-'}</span></div>
+                   </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 gap-1">
+                   <div className="flex justify-between">
+                     <span>AVG CNN P(SLEEPY):</span>
+                     <span className={`font-bold ${metrics.fusion?.cnn_p_sleepy > 0.5 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                       {metrics.fusion?.cnn_p_sleepy?.toFixed(3)} 
+                       <span className="ml-2">({metrics.fusion?.cnn_p_sleepy > 0.5 ? 'SLEEPY' : 'AWAKE'})</span>
+                     </span>
+                   </div>
+                   <div className="flex justify-between text-slate-400">
+                     <span>CNN INFERENCE LATENCY:</span>
+                     <span className="text-white">{metrics.cnn_latency_ms?.toFixed(1)} ms</span>
+                   </div>
+                   <div className="flex justify-between text-slate-400">
+                     <span>TOTAL LATENCY:</span>
+                     <span className="text-white">{metrics.total_latency_ms?.toFixed(1)} ms</span>
+                   </div>
+                 </div>
+              </div>
+            )}
+
             {/* Subtle Camera HUD Corner markings */}
-            <div className="absolute top-3 right-3 text-[10px] font-mono text-cyan-400/80 bg-slate-950/70 px-2 py-1 rounded-md border border-cyan-500/20 pointer-events-none">
-              {isPaused ? 'MONITORING SUSPENDED' : 'FACIAL MESH • 478 PTS'}
+            <div className="absolute top-3 right-3 text-[10px] font-mono text-cyan-400/80 bg-slate-950/70 px-2 py-1 rounded-md border border-cyan-500/20 pointer-events-none flex flex-col items-end gap-1 z-10 shadow-lg">
+              <div>{isPaused ? 'MONITORING SUSPENDED' : `FACIAL MESH • 478 PTS`}</div>
+              <div>CAMERA: <span className="text-white font-bold">{cameraType === 'ir' ? 'USB IR' : 'RGB Webcam'}</span></div>
+              <div>FACE DETECTED: <span className={metrics.face_detected ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>{metrics.face_detected ? 'YES' : 'NO'}</span></div>
+              <div>FPS: {fps} | Latency: {metrics.total_latency_ms || 0} ms</div>
             </div>
           </div>
         </div>
@@ -595,7 +797,29 @@ export default function DriverMonitoringPage() {
             </div>
           </div>
 
-          {/* Metric 5: KSS Fatigue Scale */}
+          {/* Metric 5: Phone Distraction Telemetry */}
+          <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-3.5">
+            <div className="flex justify-between text-xs mb-1.5">
+              <span className="text-slate-400 font-semibold flex items-center gap-1.5">
+                <Smartphone className="w-3.5 h-3.5 text-purple-400" /> Phone Distraction
+              </span>
+              <span className={`font-mono font-bold ${metrics.distraction_confirmed ? 'text-purple-400 animate-pulse' : metrics.distraction_active ? 'text-amber-400' : metrics.phone_detected ? 'text-cyan-400' : 'text-slate-400'}`}>
+                {metrics.distraction_confirmed
+                  ? `CONFIRMED (${metrics.distraction_duration ? metrics.distraction_duration.toFixed(1) : '2.0'}s)`
+                  : metrics.distraction_active
+                  ? `DETECTING (${metrics.distraction_duration ? metrics.distraction_duration.toFixed(1) : '0.0'}s)`
+                  : metrics.phone_detected
+                  ? `PHONE PRESENT (${(metrics.phone_confidence * 100).toFixed(0)}%)`
+                  : 'ATTENTIVE'}
+              </span>
+            </div>
+            <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+              <span>Object: {metrics.phone_detected ? `Cell phone (${(metrics.phone_confidence * 100).toFixed(0)}%)` : 'None in view'}</span>
+              <span>Head Tilt: {metrics.head_pitch.toFixed(1)}°</span>
+            </div>
+          </div>
+
+          {/* Metric 6: KSS Fatigue Scale */}
           <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-3.5 flex items-center justify-between">
             <div>
               <span className="text-[10px] text-slate-500 uppercase font-semibold">Euro NCAP KSS Scale</span>

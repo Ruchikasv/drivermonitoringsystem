@@ -44,6 +44,7 @@ class SessionResponse(BaseModel):
     pause_started_at: Optional[str] = None
     total_paused_seconds: float = 0.0
     is_paused: bool = False
+    is_locked: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +57,14 @@ def create_session(
     repo: MonitoringRepository = Depends(_get_repo),
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
-    """Create a new ACTIVE monitoring session for a driver."""
+    """Create a new ACTIVE monitoring session for a driver, strictly blocked if locked out."""
+    from app.hardware.alcohol_sensor import mq3_serial_reader
+    if mq3_serial_reader.is_locked():
+        raise HTTPException(
+            status_code=423,
+            detail="VEHICLE OPERATION LOCKED OUT: Potential alcohol detected. Trip start is restricted pending authorized owner resolution.",
+        )
+
     owner_id = current_owner.owner_id if current_owner else None
     session_id = repo.create_session(body.driver_id, body.vehicle_id, owner_id=owner_id)
     session = repo.get_session(session_id)
@@ -73,6 +81,7 @@ def create_session(
         pause_started_at=session.pause_started_at,
         total_paused_seconds=session.total_paused_seconds,
         is_paused=(session.status == "PAUSED"),
+        is_locked=mq3_serial_reader.is_locked(),
     )
 
 
@@ -82,6 +91,8 @@ def list_active_sessions(
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
     """Return all currently active and paused monitoring sessions (scoped to owner if authenticated)."""
+    from app.hardware.alcohol_sensor import mq3_serial_reader
+    is_locked = mq3_serial_reader.is_locked()
     owner_id = current_owner.owner_id if current_owner else None
     sessions = repo.get_active_sessions(owner_id=owner_id, include_paused=True)
     return [
@@ -91,11 +102,12 @@ def list_active_sessions(
             vehicle_id=s.vehicle_id,
             start_time=s.start_time,
             end_time=s.end_time,
-            status=s.status,
+            status="PAUSED" if is_locked else s.status,
             session_token=s.session_token,
             pause_started_at=s.pause_started_at,
             total_paused_seconds=s.total_paused_seconds,
-            is_paused=(s.status == "PAUSED"),
+            is_paused=True if is_locked else (s.status == "PAUSED"),
+            is_locked=is_locked,
         )
         for s in sessions
     ]
@@ -108,6 +120,8 @@ def get_session(
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
     """Get a single monitoring session by ID with owner validation."""
+    from app.hardware.alcohol_sensor import mq3_serial_reader
+    is_locked = mq3_serial_reader.is_locked()
     owner_id = current_owner.owner_id if current_owner else None
     session = repo.get_session(session_id, owner_id=owner_id)
     if not session:
@@ -118,11 +132,12 @@ def get_session(
         vehicle_id=session.vehicle_id,
         start_time=session.start_time,
         end_time=session.end_time,
-        status=session.status,
+        status="PAUSED" if is_locked else session.status,
         session_token=session.session_token,
         pause_started_at=session.pause_started_at,
         total_paused_seconds=session.total_paused_seconds,
-        is_paused=(session.status == "PAUSED"),
+        is_paused=True if is_locked else (session.status == "PAUSED"),
+        is_locked=is_locked,
     )
 
 
@@ -171,7 +186,14 @@ def resume_session(
     repo: MonitoringRepository = Depends(_get_repo),
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
-    """Resume a paused monitoring session."""
+    """Resume a paused monitoring session, strictly blocked if locked out."""
+    from app.hardware.alcohol_sensor import mq3_serial_reader
+    if mq3_serial_reader.is_locked():
+        raise HTTPException(
+            status_code=423,
+            detail="VEHICLE OPERATION LOCKED OUT: Potential alcohol detected. Trip resume is restricted pending authorized owner resolution.",
+        )
+
     owner_id = current_owner.owner_id if current_owner else None
     session = repo.get_session(session_id, owner_id=owner_id)
     if not session:

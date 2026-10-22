@@ -58,6 +58,8 @@ def get_current_owner(
         token = auth_header.credentials
     elif settings.COOKIE_NAME in request.cookies:
         token = request.cookies.get(settings.COOKIE_NAME)
+    elif "token" in request.query_params and request.query_params.get("token"):
+        token = request.query_params.get("token")
 
     if not token:
         raise HTTPException(
