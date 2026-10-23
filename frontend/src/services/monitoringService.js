@@ -21,34 +21,38 @@ export const monitoringService = {
   },
 
   /**
-   * Get single session details.
+   * Get single session details with optional driver token.
    */
-  async getSession(sessionId) {
-    const response = await apiClient.get(`/sessions/${sessionId}`);
+  async getSession(sessionId, token = null) {
+    const config = token ? { params: { token } } : {};
+    const response = await apiClient.get(`/sessions/${sessionId}`, config);
     return response.data;
   },
 
   /**
    * Pause a running trip.
    */
-  async pauseSession(sessionId) {
-    const response = await apiClient.post(`/sessions/${sessionId}/pause`);
+  async pauseSession(sessionId, token = null) {
+    const config = token ? { params: { token } } : {};
+    const response = await apiClient.post(`/sessions/${sessionId}/pause`, null, config);
     return response.data;
   },
 
   /**
    * Resume a paused trip.
    */
-  async resumeSession(sessionId) {
-    const response = await apiClient.post(`/sessions/${sessionId}/resume`);
+  async resumeSession(sessionId, token = null) {
+    const config = token ? { params: { token } } : {};
+    const response = await apiClient.post(`/sessions/${sessionId}/resume`, null, config);
     return response.data;
   },
 
   /**
    * End a monitoring session (driver finished trip).
    */
-  async endSession(sessionId) {
-    const response = await apiClient.delete(`/sessions/${sessionId}`);
+  async endSession(sessionId, token = null) {
+    const config = token ? { params: { token } } : {};
+    const response = await apiClient.delete(`/sessions/${sessionId}`, config);
     return response.data;
   },
 
@@ -72,8 +76,13 @@ export const monitoringService = {
    * Get WebSocket URL for driver real-time stream with optional session token.
    */
   getWebSocketUrl(sessionId, token = null) {
-    const base = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000')
-      .replace(/^http/, 'ws');
+    let base = import.meta.env.VITE_API_BASE_URL;
+    if (!base && typeof window !== 'undefined' && window.location) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      base = `${protocol}//${window.location.hostname}:8000`;
+    } else {
+      base = (base || 'http://127.0.0.1:8000').replace(/^http/, 'ws');
+    }
     const url = `${base}/ws/monitor/${sessionId}`;
     return token ? `${url}?token=${encodeURIComponent(token)}` : url;
   },

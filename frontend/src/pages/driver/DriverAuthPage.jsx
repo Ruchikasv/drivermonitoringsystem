@@ -9,6 +9,8 @@ export default function DriverAuthPage() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const isStartingRef = useRef(false);
+  const autoStartTimerRef = useRef(null);
 
   const [cameraActive, setCameraActive] = useState(false);
   const [authenticating, setAuthenticating] = useState(false);
@@ -18,6 +20,10 @@ export default function DriverAuthPage() {
 
   // Explicitly release browser camera stream
   const stopCamera = () => {
+    if (autoStartTimerRef.current) {
+      clearTimeout(autoStartTimerRef.current);
+      autoStartTimerRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => {
         track.stop();
@@ -53,12 +59,16 @@ export default function DriverAuthPage() {
   useEffect(() => {
     startCamera();
     return () => {
+      if (autoStartTimerRef.current) {
+        clearTimeout(autoStartTimerRef.current);
+        autoStartTimerRef.current = null;
+      }
       stopCamera();
     };
   }, []);
 
   const handleAuthenticate = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || authenticating) return;
 
     setErrorMsg(null);
     setAuthenticating(true);
@@ -80,13 +90,18 @@ export default function DriverAuthPage() {
 
       if (res.vehicle_id) {
         // Auto-launch monitoring session after brief verification display
-        setTimeout(() => {
+        if (autoStartTimerRef.current) clearTimeout(autoStartTimerRef.current);
+        autoStartTimerRef.current = setTimeout(() => {
           handleStartShift(res);
         }, 1200);
       }
     } catch (err) {
       console.error('Authentication error:', err);
-      const detail = err.response?.data?.detail || 'Authentication failed. Please position face clearly.';
+      const detail = err.response?.data?.detail 
+        || (err.message === 'Network Error' || err.code === 'ERR_NETWORK' 
+            ? 'Unable to connect to Fleet Safety server. Verify backend is running on port 8000.' 
+            : err.message)
+        || 'Authentication failed. Please position face clearly.';
       setErrorMsg(detail);
     } finally {
       setAuthenticating(false);
@@ -95,6 +110,13 @@ export default function DriverAuthPage() {
 
   const handleStartShift = async (targetAuth = authResult) => {
     if (!targetAuth || !targetAuth.vehicle_id) return;
+    if (isStartingRef.current) return;
+
+    isStartingRef.current = true;
+    if (autoStartTimerRef.current) {
+      clearTimeout(autoStartTimerRef.current);
+      autoStartTimerRef.current = null;
+    }
 
     setStartingSession(true);
     setErrorMsg(null);
@@ -106,19 +128,31 @@ export default function DriverAuthPage() {
       // Short delay to guarantee hardware driver release
       await new Promise((r) => setTimeout(r, 150));
 
-      // 2. Create session in backend
-      const session = await monitoringService.createSession(
-        targetAuth.driver_id,
-        targetAuth.vehicle_id
-      );
+      // 2. Obtain session: use pre-generated session from authenticateDriver if available, or create new
+      let sessionId = targetAuth.session_id;
+      let sessionToken = targetAuth.session_token;
+
+      if (!sessionId) {
+        const session = await monitoringService.createSession(
+          targetAuth.driver_id,
+          targetAuth.vehicle_id
+        );
+        sessionId = session.session_id;
+        sessionToken = session.session_token;
+      }
 
       // 3. Navigate to monitoring page with secure session token
-      const token = session.session_token || targetAuth.session_token || '';
-      const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
-      navigate(`/driver/monitoring?session=${session.session_id}&driver=${targetAuth.driver_id}${tokenParam}`);
+      const tokenParam = sessionToken ? `&token=${encodeURIComponent(sessionToken)}` : '';
+      navigate(`/driver/monitoring?session=${sessionId}&driver=${targetAuth.driver_id}${tokenParam}`);
     } catch (err) {
       console.error('Failed to create session:', err);
-      setErrorMsg(err.response?.data?.detail || 'Failed to start monitoring session. Try again.');
+      isStartingRef.current = false;
+      const detail = err.response?.data?.detail 
+        || (err.message === 'Network Error' || err.code === 'ERR_NETWORK' 
+            ? 'Unable to reach Fleet Safety server. Verify backend is running on port 8000.' 
+            : err.message)
+        || 'Failed to start monitoring session. Try again.';
+      setErrorMsg(detail);
       setStartingSession(false);
       startCamera();
     }
@@ -195,7 +229,7 @@ export default function DriverAuthPage() {
                 <button
                   type="button"
                   disabled={startingSession}
-                  onClick={handleStartShift}
+                  onClick={() => handleStartShift(authResult)}
                   className="px-8 py-4 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-extrabold text-base rounded-2xl transition shadow-xl shadow-cyan-500/20 flex items-center justify-center gap-2"
                 >
                   {startingSession ? (

@@ -78,12 +78,15 @@ export default function Sidebar() {
 
       {/* System Status & Driver Portal Button */}
       <div className="p-4 border-t border-slate-800 bg-slate-950/30 space-y-3">
-        <NavLink
-          to="/driver"
-          className="flex items-center justify-center gap-2 w-full py-2.5 px-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs rounded-xl shadow-md transition"
+        <button
+          type="button"
+          onClick={() => {
+            window.open('/driver', '_blank', 'noopener,noreferrer');
+          }}
+          className="flex items-center justify-center gap-2 w-full py-2.5 px-3 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold text-xs rounded-xl shadow-md transition cursor-pointer"
         >
           <Truck className="w-4 h-4" /> Driver Cab Portal &rarr;
-        </NavLink>
+        </button>
 
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/50">
           <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />

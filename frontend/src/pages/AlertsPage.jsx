@@ -38,22 +38,28 @@ export default function AlertsPage() {
   useEffect(() => {
     loadData();
   }, []);
-
   const filteredAlerts = useMemo(() => {
-    return alerts.filter((a) => {
-      const matchesLevel = level === 'ALL' || a.level === Number(level);
-      const matchesDriver = driverId === 'ALL' || a.driver_id === Number(driverId);
-      const query = search.toLowerCase().trim();
-      const matchesSearch =
-        !query ||
-        a.alert_id.toLowerCase().includes(query) ||
-        a.driver_name.toLowerCase().includes(query) ||
-        a.event_type.toLowerCase().includes(query) ||
-        a.location.toLowerCase().includes(query) ||
-        a.vehicle_plate.toLowerCase().includes(query);
+    return alerts
+      .filter((a) => {
+        const matchesLevel = level === 'ALL' || a.level === Number(level);
+        const matchesDriver = driverId === 'ALL' || a.driver_id === Number(driverId);
+        const query = search.toLowerCase().trim();
+        const matchesSearch =
+          !query ||
+          a.alert_id.toLowerCase().includes(query) ||
+          a.driver_name.toLowerCase().includes(query) ||
+          a.event_type.toLowerCase().includes(query) ||
+          a.location.toLowerCase().includes(query) ||
+          a.vehicle_plate.toLowerCase().includes(query);
 
-      return matchesLevel && matchesDriver && matchesSearch;
-    });
+        return matchesLevel && matchesDriver && matchesSearch;
+      })
+      .sort((a, b) => {
+        const timeA = new Date(a.timestamp).getTime();
+        const timeB = new Date(b.timestamp).getTime();
+        if (timeB !== timeA) return timeB - timeA;
+        return (b.incident_id || 0) - (a.incident_id || 0);
+      });
   }, [alerts, search, level, driverId]);
 
   const levelCounts = useMemo(() => {

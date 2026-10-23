@@ -379,13 +379,13 @@ class MonitoringRepository:
                 """
                 SELECT * FROM monitoring_incidents
                 WHERE owner_id = ?
-                ORDER BY timestamp DESC LIMIT ?
+                ORDER BY timestamp DESC, incident_id DESC LIMIT ?
                 """,
                 (owner_id, limit),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM monitoring_incidents ORDER BY timestamp DESC LIMIT ?", (limit,)
+                "SELECT * FROM monitoring_incidents ORDER BY timestamp DESC, incident_id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [MonitoringIncident(**dict(r)) for r in rows]
 
@@ -395,13 +395,13 @@ class MonitoringRepository:
                 """
                 SELECT * FROM monitoring_incidents
                 WHERE driver_id = ? AND owner_id = ?
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, incident_id DESC
                 """,
                 (driver_id, owner_id),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM monitoring_incidents WHERE driver_id = ? ORDER BY timestamp DESC",
+                "SELECT * FROM monitoring_incidents WHERE driver_id = ? ORDER BY timestamp DESC, incident_id DESC",
                 (driver_id,),
             ).fetchall()
         return [MonitoringIncident(**dict(r)) for r in rows]
@@ -412,13 +412,13 @@ class MonitoringRepository:
                 """
                 SELECT * FROM monitoring_incidents
                 WHERE session_id = ? AND owner_id = ?
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, incident_id DESC
                 """,
                 (session_id, owner_id),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM monitoring_incidents WHERE session_id = ? ORDER BY timestamp DESC",
+                "SELECT * FROM monitoring_incidents WHERE session_id = ? ORDER BY timestamp DESC, incident_id DESC",
                 (session_id,),
             ).fetchall()
         return [MonitoringIncident(**dict(r)) for r in rows]

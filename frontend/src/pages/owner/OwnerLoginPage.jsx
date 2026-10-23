@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Shield, Lock, Mail, ArrowRight, AlertCircle, Truck, Sparkles } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -14,6 +14,13 @@ export const OwnerLoginPage = () => {
   const location = useLocation();
 
   const from = location.state?.from?.pathname || '/dashboard';
+
+  // Ensure login fields always start clean and empty on initial mount or route change
+  useEffect(() => {
+    setEmail('');
+    setPassword('');
+    setError(null);
+  }, [location.pathname]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -67,9 +74,9 @@ export const OwnerLoginPage = () => {
             </div>
           )}
 
-          <form className="space-y-5" onSubmit={handleSubmit}>
+          <form className="space-y-5" onSubmit={handleSubmit} autoComplete="on">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+              <label htmlFor="owner-login-email" className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                 Owner / Manager Email
               </label>
               <div className="relative rounded-xl shadow-sm">
@@ -77,18 +84,21 @@ export const OwnerLoginPage = () => {
                   <Mail className="h-5 w-5 text-slate-500" />
                 </div>
                 <input
+                  id="owner-login-email"
+                  name="email"
                   type="email"
                   required
+                  autoComplete="username"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="manager@fleet.com"
+                  placeholder="name@company.com"
                   className="block w-full pl-11 pr-4 py-3 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm transition-all"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+              <label htmlFor="owner-login-password" className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                 Password
               </label>
               <div className="relative rounded-xl shadow-sm">
@@ -96,11 +106,14 @@ export const OwnerLoginPage = () => {
                   <Lock className="h-5 w-5 text-slate-500" />
                 </div>
                 <input
+                  id="owner-login-password"
+                  name="password"
                   type="password"
                   required
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
+                  placeholder="Enter your password"
                   className="block w-full pl-11 pr-4 py-3 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm transition-all"
                 />
               </div>
@@ -124,6 +137,40 @@ export const OwnerLoginPage = () => {
               )}
             </button>
           </form>
+
+          {/* Development Demo Credentials Helper */}
+          <div className="mt-4 p-3 rounded-xl bg-slate-950/50 border border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+            <div className="flex flex-col">
+              <span className="font-semibold text-slate-300">Demo Account</span>
+              <span className="text-[11px] text-slate-500 font-mono">manager@fleet.com</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEmail('manager@fleet.com');
+                  setPassword('Password123!');
+                  setError(null);
+                }}
+                className="px-2.5 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 hover:text-indigo-300 border border-indigo-500/30 font-medium transition-all text-xs"
+              >
+                Fill Demo
+              </button>
+              {(email || password) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmail('');
+                    setPassword('');
+                    setError(null);
+                  }}
+                  className="px-2 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-slate-300 border border-slate-700/50 text-xs transition-all"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
 
           <div className="mt-6 pt-6 border-t border-slate-800/80 flex flex-col gap-4 text-center">
             <p className="text-xs text-slate-400">

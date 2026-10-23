@@ -56,10 +56,29 @@ from app.distraction.gaze import estimate_gaze_ratios
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Monitoring WebSocket"])
 
+
+def _preprocess_eye_numpy(crop: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    """Lightweight, zero-PyTorch-overhead numpy preprocessing for 32x32 eye CNN."""
+    if crop is None or crop.size == 0 or crop.shape[0] < 2 or crop.shape[1] < 2:
+        return None
+    try:
+        if crop.ndim == 3:
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = crop
+        resized = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
+        norm = (resized.astype(np.float32) / 255.0 - 0.5) / 0.5
+        return norm[np.newaxis, np.newaxis, :, :]  # Shape: (1, 1, 32, 32)
+    except Exception:
+        return None
+
+
 # In-memory real-time metrics cache for Owner Portal polling (metrics-only)
 LIVE_SESSION_METRICS: dict[int, dict] = {}
 # In-memory most recent raw camera frame per active session for evidence capture
 LIVE_SESSION_FRAMES: dict[int, np.ndarray] = {}
+ACTIVE_SESSION_CONNECTIONS: dict[int, int] = collections.defaultdict(int)
+CLEANUP_TASKS: dict[int, asyncio.Task] = {}
 
 
 def get_live_session_frame(session_id: int) -> Optional[np.ndarray]:
@@ -263,6 +282,7 @@ class DriverSessionProcessor:
                     "is_critical": False,
                     "p_critical_soon": None,
                     "score_source": "face_lost",
+                    "cnn_p_sleepy": 0.0,
                     "raw_signals": {
                         "avg_perclos": 0.0,
                         "blink_rate_per_min": 0.0,
@@ -271,6 +291,9 @@ class DriverSessionProcessor:
                         "head_nods_in_window": 0,
                     },
                 },
+                "extra_sensors": extra_sensors or {},
+                "cnn_latency_ms": 0.0,
+                "total_latency_ms": round((time.time() - frame_start_time) * 1000.0, 2),
             }
             return annotated, metrics, None
 
@@ -310,49 +333,75 @@ class DriverSessionProcessor:
         cnn_start_t = time.time()
         cnn_p_sleepy = 0.0
         cnn_latency_ms = 0.0
+        res_left_p = 0.0
+        res_right_p = 0.0
+
+        left_crop = None
+        right_crop = None
+        if face_detected and landmarks_px is not None:
+            try:
+                left_crop, _ = crop_eye(frame_bgr, landmarks_px, LEFT_EYE)
+            except Exception:
+                left_crop = None
+            try:
+                right_crop, _ = crop_eye(frame_bgr, landmarks_px, RIGHT_EYE)
+            except Exception:
+                right_crop = None
+
         if self.cnn_sess and face_detected:
             try:
-                # left eye
-                left_crop, _ = crop_eye(frame_bgr, landmarks_px, LEFT_EYE)
-                res_left_p = 0.0
-                if left_crop.size > 0:
-                    tensor_l = preprocess_eye_image(left_crop).numpy()
-                    logits_l = self.cnn_sess.run(None, {"eye_image": tensor_l})[0]
-                    exp_l = np.exp(logits_l - logits_l.max())
-                    probs_l = (exp_l / exp_l.sum()).squeeze()
-                    res_left_p = float(probs_l[1])
+                tensor_l = _preprocess_eye_numpy(left_crop)
+                tensor_r = _preprocess_eye_numpy(right_crop)
 
-                # right eye
-                right_crop, _ = crop_eye(frame_bgr, landmarks_px, RIGHT_EYE)
-                res_right_p = 0.0
-                if right_crop.size > 0:
-                    tensor_r = preprocess_eye_image(right_crop).numpy()
-                    logits_r = self.cnn_sess.run(None, {"eye_image": tensor_r})[0]
-                    exp_r = np.exp(logits_r - logits_r.max())
-                    probs_r = (exp_r / exp_r.sum()).squeeze()
-                    res_right_p = float(probs_r[1])
-                    
-                if debug_mode:
-                    if left_crop.size > 0:
-                        _, buf = cv2.imencode(".jpg", left_crop)
-                        extra_sensors["left_eye_b64"] = base64.b64encode(buf).decode()
-                    if right_crop.size > 0:
-                        _, buf = cv2.imencode(".jpg", right_crop)
-                        extra_sensors["right_eye_b64"] = base64.b64encode(buf).decode()
-                    
-                    extra_sensors["cnn_p_left"] = res_left_p
-                    extra_sensors["cnn_p_right"] = res_right_p
+                if tensor_l is not None and tensor_r is not None:
+                    batch = np.concatenate([tensor_l, tensor_r], axis=0)
+                    logits = self.cnn_sess.run(None, {"eye_image": batch})[0]
+                    exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+                    probs = exp / exp.sum(axis=1, keepdims=True)
+                    res_left_p = float(probs[0, 1])
+                    res_right_p = float(probs[1, 1])
+                    avg_sleepy = (res_left_p + res_right_p) / 2.0
+                elif tensor_l is not None:
+                    logits = self.cnn_sess.run(None, {"eye_image": tensor_l})[0]
+                    exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+                    probs = (exp / exp.sum(axis=1, keepdims=True)).squeeze()
+                    res_left_p = float(probs[1])
+                    avg_sleepy = res_left_p
+                elif tensor_r is not None:
+                    logits = self.cnn_sess.run(None, {"eye_image": tensor_r})[0]
+                    exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+                    probs = (exp / exp.sum(axis=1, keepdims=True)).squeeze()
+                    res_right_p = float(probs[1])
+                    avg_sleepy = res_right_p
+                else:
+                    avg_sleepy = 0.0
 
-                    from app.drowsiness.face_mesh import draw_landmarks
-                    draw_landmarks(annotated, landmarks_px)
-                
-                avg_sleepy = (res_left_p + res_right_p) / 2.0
                 self.cnn_history.append(avg_sleepy)
                 cnn_p_sleepy = sum(self.cnn_history) / len(self.cnn_history)
             except Exception as e:
                 logger.warning("CNN inference failed on current frame: %s", e)
-        
+
         cnn_latency_ms = (time.time() - cnn_start_t) * 1000.0
+
+        extra_sensors["cnn_p_left"] = round(res_left_p, 3)
+        extra_sensors["cnn_p_right"] = round(res_right_p, 3)
+        extra_sensors["cnn_p_sleepy"] = round(cnn_p_sleepy, 3)
+        extra_sensors["cnn_latency_ms"] = round(cnn_latency_ms, 2)
+
+        if debug_mode:
+            try:
+                if left_crop is not None and left_crop.size > 0:
+                    _, buf_l = cv2.imencode(".jpg", left_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                    extra_sensors["left_eye_b64"] = base64.b64encode(buf_l).decode("utf-8")
+                if right_crop is not None and right_crop.size > 0:
+                    _, buf_r = cv2.imencode(".jpg", right_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                    extra_sensors["right_eye_b64"] = base64.b64encode(buf_r).decode("utf-8")
+
+                if landmarks_px is not None and len(landmarks_px) > 0:
+                    from app.drowsiness.face_mesh import draw_landmarks
+                    draw_landmarks(annotated, landmarks_px)
+            except Exception as debug_err:
+                logger.debug("Debug overlay/crop encoding error: %s", debug_err)
 
         # 5.6 In-Cabin Object & Phone Distraction Detection (Every N frames to preserve 15 FPS real-time speed)
         self._frame_count += 1
@@ -668,6 +717,13 @@ async def monitor_stream(
     Validates driver session token to prevent unauthorized session access.
     """
     await websocket.accept()
+
+    # Cancel any pending disconnect cleanup task if client is reconnecting
+    pending_cleanup = CLEANUP_TASKS.pop(session_id, None)
+    if pending_cleanup and not pending_cleanup.done():
+        pending_cleanup.cancel()
+
+    ACTIVE_SESSION_CONNECTIONS[session_id] += 1
 
     # 1. Validate session and driver in DB
     m_repo = MonitoringRepository(conn)
@@ -999,7 +1055,7 @@ async def monitor_stream(
             if dist_info.get("is_new_incident"):
                 try:
                     distraction_evidence_path = generate_evidence_screenshot(
-                        frame_bgr=annotated_frame,
+                        frame_bgr=frame_bgr,
                         driver_name=driver_name,
                         driver_id=session.driver_id,
                         vehicle_registration=vehicle_reg,
@@ -1140,11 +1196,12 @@ async def monitor_stream(
 
             debug_data = None
             if debug_mode:
+                extra = metrics.get("extra_sensors") or {}
                 debug_data = {
-                    "left_eye": metrics["extra_sensors"].get("left_eye_b64"),
-                    "right_eye": metrics["extra_sensors"].get("right_eye_b64"),
-                    "cnn_p_left": metrics["extra_sensors"].get("cnn_p_left"),
-                    "cnn_p_right": metrics["extra_sensors"].get("cnn_p_right"),
+                    "left_eye": extra.get("left_eye_b64"),
+                    "right_eye": extra.get("right_eye_b64"),
+                    "cnn_p_left": extra.get("cnn_p_left", 0.0),
+                    "cnn_p_right": extra.get("cnn_p_right", 0.0),
                 }
 
             ws_message = {
@@ -1192,23 +1249,40 @@ async def monitor_stream(
     except Exception as e:
         logger.error("Error in monitoring stream for session %d: %s", session_id, e, exc_info=True)
     finally:
-        # Cleanup
-        if session_id in LIVE_SESSION_METRICS:
-            LIVE_SESSION_METRICS.pop(session_id, None)
-        if session_id in LIVE_SESSION_FRAMES:
-            LIVE_SESSION_FRAMES.pop(session_id, None)
+        ACTIVE_SESSION_CONNECTIONS[session_id] = max(0, ACTIVE_SESSION_CONNECTIONS[session_id] - 1)
+        if ACTIVE_SESSION_CONNECTIONS[session_id] == 0:
+            if session_id in LIVE_SESSION_METRICS:
+                LIVE_SESSION_METRICS.pop(session_id, None)
+            if session_id in LIVE_SESSION_FRAMES:
+                LIVE_SESSION_FRAMES.pop(session_id, None)
 
         if processor:
             processor.close()
 
-        # Mark session as INTERRUPTED if it's still ACTIVE in DB
-        # (handles browser tab close without pressing End Trip; leaves PAUSED sessions intact)
-        try:
-            cleanup_repo = MonitoringRepository(conn)
-            session_record = cleanup_repo.get_session(session_id)
-            if session_record and session_record.status == "ACTIVE":
-                cleanup_repo.end_session(session_id, status="INTERRUPTED")
-                cleanup_repo.recalculate_safety_rating(session_record.driver_id)
-                logger.info("Session %d marked as INTERRUPTED (unexpected disconnect)", session_id)
-        except Exception as cleanup_err:
-            logger.warning("Failed to mark session %d as interrupted: %s", session_id, cleanup_err)
+        # Mark session as INTERRUPTED after a grace period if no reconnection arrives.
+        # This prevents accidental session interruption during component rerenders,
+        # temporary camera device switches, or page navigation.
+        if ACTIVE_SESSION_CONNECTIONS[session_id] == 0:
+            async def _delayed_interrupt(sid: int):
+                try:
+                    await asyncio.sleep(12.0)
+                    if ACTIVE_SESSION_CONNECTIONS.get(sid, 0) == 0:
+                        cleanup_conn = get_connection()
+                        cleanup_repo = MonitoringRepository(cleanup_conn)
+                        rec = cleanup_repo.get_session(sid)
+                        if rec and rec.status == "ACTIVE":
+                            cleanup_repo.end_session(sid, status="INTERRUPTED")
+                            cleanup_repo.recalculate_safety_rating(rec.driver_id)
+                            logger.info("Session %d marked as INTERRUPTED after disconnect grace period", sid)
+                        cleanup_conn.close()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as cleanup_err:
+                    logger.warning("Failed in delayed cleanup for session %d: %s", sid, cleanup_err)
+                finally:
+                    CLEANUP_TASKS.pop(sid, None)
+
+            old_task = CLEANUP_TASKS.get(session_id)
+            if old_task and not old_task.done():
+                old_task.cancel()
+            CLEANUP_TASKS[session_id] = asyncio.create_task(_delayed_interrupt(session_id))

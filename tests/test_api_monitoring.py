@@ -507,5 +507,49 @@ def test_driver_session_processor_process_frame_with_config():
     processor.close()
 
 
+def test_driver_session_processor_debug_mode_no_face():
+    """Verify DriverSessionProcessor with debug_mode=True does not raise KeyError on face loss."""
+    from app.api.monitoring_ws import DriverSessionProcessor
+    processor = DriverSessionProcessor(
+        session_id=999,
+        driver_id=1,
+        driver_name="Test Driver",
+        vehicle_reg="KA-01-MJ-8821",
+    )
+
+    dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    annotated, metrics, alert = processor.process_frame(dummy_frame, debug_mode=True)
+
+    assert annotated.shape == (480, 640, 3)
+    assert metrics["face_detected"] is False
+    assert "extra_sensors" in metrics
+    assert "cnn_latency_ms" in metrics
+    assert "total_latency_ms" in metrics
+    assert metrics["fusion"]["cnn_p_sleepy"] == 0.0
+
+    # Clean up
+    processor.close()
+
+
+def test_preprocess_eye_numpy():
+    """Verify _preprocess_eye_numpy handles normal, empty, and invalid crops safely."""
+    from app.api.monitoring_ws import _preprocess_eye_numpy
+    
+    # 1. Normal BGR crop
+    crop = np.random.randint(0, 255, (60, 60, 3), dtype=np.uint8)
+    res = _preprocess_eye_numpy(crop)
+    assert res is not None
+    assert res.shape == (1, 1, 32, 32)
+    assert res.dtype == np.float32
+    assert -1.0 <= res.min() <= 1.0
+    assert -1.0 <= res.max() <= 1.0
+
+    # 2. None or empty crop
+    assert _preprocess_eye_numpy(None) is None
+    assert _preprocess_eye_numpy(np.zeros((0, 0, 3), dtype=np.uint8)) is None
+    assert _preprocess_eye_numpy(np.zeros((1, 1, 3), dtype=np.uint8)) is None
+
+
+
 
 

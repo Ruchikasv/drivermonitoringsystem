@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   Clock,
   Smartphone,
+  Loader2,
 } from 'lucide-react';
 import { monitoringService } from '../../services/monitoringService';
 import { soundManager } from '../../utils/soundManager';
@@ -25,7 +26,10 @@ export default function DriverMonitoringPage() {
 
   const sessionId = searchParams.get('session');
   const driverId = searchParams.get('driver');
+  const sessionToken = searchParams.get('token');
 
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [sessionError, setSessionError] = useState(null);
   const [connected, setConnected] = useState(false);
   const [frameB64, setFrameB64] = useState(null);
   const [cameraReady, setCameraReady] = useState(false);
@@ -59,6 +63,7 @@ export default function DriverMonitoringPage() {
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [cameraType, setCameraType] = useState('rgb');
   const [debugMode, setDebugMode] = useState(false);
+  const [debugTab, setDebugTab] = useState('all');
   const [debugData, setDebugData] = useState(null);
   const [fps, setFps] = useState(0);
 
@@ -135,31 +140,68 @@ export default function DriverMonitoringPage() {
       return;
     }
 
-    const checkInitialStatus = async () => {
+    let isCancelled = false;
+    let wsInstance = null;
+
+    const startSessionWorkflow = async () => {
+      setSessionLoading(true);
+      setSessionError(null);
+
       try {
-        const sess = await monitoringService.getSession(sessionId);
-        if (sess) {
-          if (sess.status === 'PAUSED') {
-            setIsPaused(true);
-          } else if (sess.status === 'COMPLETED' || sess.status === 'INTERRUPTED') {
-            navigate('/driver');
-            return;
-          }
+        const sess = await monitoringService.getSession(sessionId, sessionToken);
+        if (isCancelled) return;
+
+        if (!sess) {
+          setSessionError('Monitoring session record not found.');
+          setSessionLoading(false);
+          return;
         }
-      } catch (e) {
-        console.error('Error checking session status:', e);
+
+        if (sess.is_locked) {
+          setIsPaused(true);
+          setSessionError('VEHICLE OPERATION LOCKED OUT: Potential alcohol detected. Trip operation is restricted.');
+          setSessionLoading(false);
+          return;
+        }
+
+        if (sess.status === 'PAUSED') {
+          setIsPaused(true);
+        } else if (sess.status === 'COMPLETED' || sess.status === 'INTERRUPTED') {
+          setSessionError(`Trip monitoring has ended (status: ${sess.status}).`);
+          setSessionLoading(false);
+          return;
+        }
+
+        setSessionLoading(false);
+        await initCamerasAndStream();
+      } catch (err) {
+        if (isCancelled) return;
+        console.error('Session verification error:', err);
+        setSessionLoading(false);
+
+        if (err.response?.status === 423) {
+          setIsPaused(true);
+          setSessionError(err.response.data?.detail || 'VEHICLE OPERATION LOCKED OUT: Potential alcohol detected.');
+          return;
+        }
+
+        const msg = err.response?.data?.detail
+          || (err.message === 'Network Error' || err.code === 'ERR_NETWORK'
+              ? 'Unable to connect to Fleet Safety DMS server. Please verify the backend is running on port 8000.'
+              : err.message)
+          || 'Failed to initialize driver monitoring session.';
+        setSessionError(msg);
       }
     };
-    checkInitialStatus();
 
-    const getCameras = async () => {
+    const initCamerasAndStream = async () => {
       try {
         // Trigger camera permission (we immediately stop this temp stream)
         const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
-        tempStream.getTracks().forEach(t => t.stop());
+        tempStream.getTracks().forEach((t) => t.stop());
         const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(d => d.kind === 'videoinput');
-        console.log('[DMS Camera] Enumerated cameras:', videoDevices.map(d => ({ label: d.label, deviceId: d.deviceId })));
+        const videoDevices = devices.filter((d) => d.kind === 'videoinput');
+        console.log('[DMS Camera] Enumerated cameras:', videoDevices.map((d) => ({ label: d.label, deviceId: d.deviceId })));
         setCameras(videoDevices);
         if (videoDevices.length > 0 && !selectedCameraId) {
           const firstDevice = videoDevices[0];
@@ -175,164 +217,182 @@ export default function DriverMonitoringPage() {
         console.error('[DMS Camera] Error enumerating devices', err);
         startWebcam();
       }
-    };
-    getCameras();
 
-    const token = searchParams.get('token');
-    const wsUrl = monitoringService.getWebSocketUrl(sessionId, token);
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+      if (isCancelled) return;
 
-    ws.onopen = () => {
-      setConnected(true);
-      console.log('Connected to driver monitoring WebSocket:', sessionId);
+      const token = searchParams.get('token');
+      const wsUrl = monitoringService.getWebSocketUrl(sessionId, token);
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      wsInstance = ws;
 
-      // Flow-controlled frame transmission to backend (no queue backlog)
-      if (captureIntervalRef.current) clearInterval(captureIntervalRef.current);
-      isSendingRef.current = false;
-      captureIntervalRef.current = setInterval(() => {
-        if (!videoRef.current || ws.readyState !== WebSocket.OPEN) return;
-        if (isSendingRef.current || ws.bufferedAmount > 0) return;
-        const video = videoRef.current;
-        if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused || video.readyState < 2) return;
-
-        if (!canvasRef.current) {
-          canvasRef.current = document.createElement('canvas');
-        }
-        const canvas = canvasRef.current;
-        canvas.width = 640;
-        canvas.height = 480;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, 640, 480);
-        console.log('FRAME_CAPTURED');
-
-        const b64 = canvas.toDataURL('image/jpeg', 0.60);
-        isSendingRef.current = true;
-        wsSentCountRef.current += 1;
-        
-        framesCountRef.current += 1;
-        const now = Date.now();
-        if (now - lastFpsTimeRef.current >= 1000) {
-          const currentFps = Math.round((framesCountRef.current * 1000) / (now - lastFpsTimeRef.current));
-          setFps(currentFps);
-          console.log(`[DMS Pipeline] FPS: ${currentFps} | Sent: ${wsSentCountRef.current} | Recv: ${wsRecvCountRef.current} | camera_type: ${cameraTypeRef.current} | videoW: ${video.videoWidth} videoH: ${video.videoHeight} readyState: ${video.readyState}`);
-          framesCountRef.current = 0;
-          lastFpsTimeRef.current = now;
-        }
-
-        ws.send(JSON.stringify({ 
-          frame: b64, 
-          camera_type: cameraTypeRef.current,
-          debug_mode: debugModeRef.current
-        }));
-        console.log('FRAME_SENT');
-      }, 85);
-    };
-
-    ws.onmessage = (event) => {
-      isSendingRef.current = false;
-      wsRecvCountRef.current += 1;
-      console.log('FRAME_RECEIVED');
-      try {
-        const data = JSON.parse(event.data);
-
-        if (data.error) {
-          console.error('WebSocket server error:', data.error);
-          setCameraError(data.error);
+      ws.onopen = () => {
+        if (isCancelled) {
+          ws.close();
           return;
         }
+        setConnected(true);
+        console.log('Connected to driver monitoring WebSocket:', sessionId);
 
-        if (data.status === 'PAUSED' || data.is_paused === true) {
-          setIsPaused(true);
-          setCurrentAlert(null);
-          soundManager.stop();
-        } else if (data.status === 'ACTIVE' || data.is_paused === false) {
-          setIsPaused(false);
-        }
+        // Flow-controlled frame transmission to backend (no queue backlog)
+        if (captureIntervalRef.current) clearInterval(captureIntervalRef.current);
+        isSendingRef.current = false;
+        captureIntervalRef.current = setInterval(() => {
+          if (!videoRef.current || ws.readyState !== WebSocket.OPEN) return;
+          if (isSendingRef.current || ws.bufferedAmount > 0) return;
+          const video = videoRef.current;
+          if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused || video.readyState < 2) return;
 
-        if (data.driver_name) {
-          setDriverInfo({
-            name: data.driver_name,
-            vehicle: data.vehicle_registration || 'Commercial Vehicle',
-          });
-        }
+          if (!canvasRef.current) {
+            canvasRef.current = document.createElement('canvas');
+          }
+          const canvas = canvasRef.current;
+          canvas.width = 640;
+          canvas.height = 480;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, 640, 480);
+          console.log('FRAME_CAPTURED');
 
-        if (data.frame_b64) {
-          setFrameB64(data.frame_b64);
-          console.log('PROCESSED_FRAME_RENDERED');
-        }
-
-        if (data.metrics) {
-          setMetrics(data.metrics);
-        }
-
-        if (data.fusion) {
-          setFusion(data.fusion);
-        }
-
-        if (data.debug_data) {
-          setDebugData(data.debug_data);
-        }
-
-        // Sync camera type from backend response if provided
-        const responseCameraType = data.camera_type || data.fusion?.camera_type;
-        if (responseCameraType) {
-          setCameraType(responseCameraType);
-          cameraTypeRef.current = responseCameraType;
-        }
-
-        const isCriticalActive = Boolean(data.critical_active) && !data.is_paused;
-
-        if (isCriticalActive) {
-          soundManager.playAlert("critical");
-        } else {
-          // If critical is no longer active, ensure critical siren is stopped
-          if (soundManager.isCriticalPlaying) {
-            soundManager.stopCriticalSiren();
+          const b64 = canvas.toDataURL('image/jpeg', 0.60);
+          isSendingRef.current = true;
+          wsSentCountRef.current += 1;
+          
+          framesCountRef.current += 1;
+          const now = Date.now();
+          if (now - lastFpsTimeRef.current >= 1000) {
+            const currentFps = Math.round((framesCountRef.current * 1000) / (now - lastFpsTimeRef.current));
+            setFps(currentFps);
+            console.log(`[DMS Pipeline] FPS: ${currentFps} | Sent: ${wsSentCountRef.current} | Recv: ${wsRecvCountRef.current} | camera_type: ${cameraTypeRef.current} | videoW: ${video.videoWidth} videoH: ${video.videoHeight} readyState: ${video.readyState}`);
+            framesCountRef.current = 0;
+            lastFpsTimeRef.current = now;
           }
 
-          // Handle one-shot warning / nudge alerts if present (keep distraction alerts independent)
-          if (data.alert && !data.is_paused && data.alert.event_type !== "distraction") {
-            if (data.alert.tier === "warning") {
-              soundManager.playAlert("warning");
-            } else if (data.alert.tier === "nudge") {
-              soundManager.playAlert("nudge");
+          ws.send(JSON.stringify({ 
+            frame: b64, 
+            camera_type: cameraTypeRef.current,
+            debug_mode: debugModeRef.current
+          }));
+          console.log('FRAME_SENT');
+        }, 85);
+      };
+
+      ws.onmessage = (event) => {
+        isSendingRef.current = false;
+        wsRecvCountRef.current += 1;
+        console.log('FRAME_RECEIVED');
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.error) {
+            console.error('WebSocket server error:', data.error);
+            setCameraError(data.error);
+            return;
+          }
+
+          if (data.status === 'PAUSED' || data.is_paused === true) {
+            setIsPaused(true);
+            setCurrentAlert(null);
+            soundManager.stop();
+          } else if (data.status === 'ACTIVE' || data.is_paused === false) {
+            setIsPaused(false);
+          }
+
+          if (data.driver_name) {
+            setDriverInfo({
+              name: data.driver_name,
+              vehicle: data.vehicle_registration || 'Commercial Vehicle',
+            });
+          }
+
+          if (data.frame_b64) {
+            setFrameB64(data.frame_b64);
+            console.log('PROCESSED_FRAME_RENDERED');
+          }
+
+          if (data.metrics) {
+            setMetrics(data.metrics);
+          }
+
+          if (data.fusion) {
+            setFusion(data.fusion);
+          }
+
+          if (data.debug_data) {
+            setDebugData((prev) => ({
+              ...prev,
+              ...data.debug_data,
+              left_eye: data.debug_data.left_eye || prev?.left_eye,
+              right_eye: data.debug_data.right_eye || prev?.right_eye,
+            }));
+          }
+
+          // Sync camera type from backend response if provided
+          const responseCameraType = data.camera_type || data.fusion?.camera_type;
+          if (responseCameraType) {
+            setCameraType(responseCameraType);
+            cameraTypeRef.current = responseCameraType;
+          }
+
+          const isCriticalActive = Boolean(data.critical_active) && !data.is_paused;
+
+          if (isCriticalActive) {
+            soundManager.playAlert("critical");
+          } else {
+            // If critical is no longer active, ensure critical siren is stopped
+            if (soundManager.isCriticalPlaying) {
+              soundManager.stopCriticalSiren();
+            }
+
+            // Handle one-shot warning / nudge alerts if present (keep distraction alerts independent)
+            if (data.alert && !data.is_paused && data.alert.event_type !== "distraction") {
+              if (data.alert.tier === "warning") {
+                soundManager.playAlert("warning");
+              } else if (data.alert.tier === "nudge") {
+                soundManager.playAlert("nudge");
+              }
             }
           }
-        }
 
-        // Distraction alert audio (independent from drowsiness tiers)
-        // Repeat beep plays when triggered: true (initial alert and every 5s repeat interval)
-        const isDistractionTriggered = (data.distraction?.triggered || data.metrics?.distraction_triggered) && !data.is_paused;
-        if (isDistractionTriggered) {
-          soundManager.playDistractionBeep(true);
-        }
+          // Distraction alert audio (independent from drowsiness tiers)
+          const isDistractionTriggered = (data.distraction?.triggered || data.metrics?.distraction_triggered) && !data.is_paused;
+          if (isDistractionTriggered) {
+            soundManager.playDistractionBeep(true);
+          }
 
-        if (data.alert && !data.is_paused) {
-          setCurrentAlert(data.alert);
-        } else if (!isCriticalActive && !data.metrics?.distraction_confirmed) {
-          setCurrentAlert(null);
+          if (data.alert && !data.is_paused) {
+            setCurrentAlert(data.alert);
+          } else if (!isCriticalActive && !data.metrics?.distraction_confirmed) {
+            setCurrentAlert(null);
+          }
+        } catch (err) {
+          console.error('WebSocket message parsing error:', err);
         }
-      } catch (err) {
-        console.error('WebSocket message parsing error:', err);
-      }
+      };
+
+      ws.onerror = () => {
+        isSendingRef.current = false;
+        console.error('Driver monitoring WebSocket error');
+      };
+
+      ws.onclose = () => {
+        isSendingRef.current = false;
+        setConnected(false);
+        console.log('Driver monitoring WebSocket closed.');
+      };
     };
 
-    ws.onerror = () => {
-      isSendingRef.current = false;
-    };
-
-    ws.onclose = () => {
-      isSendingRef.current = false;
-      setConnected(false);
-      console.log('WebSocket closed.');
-    };
+    startSessionWorkflow();
 
     return () => {
+      isCancelled = true;
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
+      }
       stopWebcam();
       soundManager.stop();
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
+      if (wsInstance && (wsInstance.readyState === WebSocket.OPEN || wsInstance.readyState === WebSocket.CONNECTING)) {
+        wsInstance.close();
       }
     };
   }, [sessionId]);
@@ -356,7 +416,7 @@ export default function DriverMonitoringPage() {
     try {
       soundManager.stop();
       setCurrentAlert(null);
-      await monitoringService.pauseSession(sessionId);
+      await monitoringService.pauseSession(sessionId, sessionToken);
       setIsPaused(true);
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ action: 'pause' }));
@@ -374,7 +434,7 @@ export default function DriverMonitoringPage() {
       soundManager.unlockAudio();
       soundManager.stop();
       setCurrentAlert(null);
-      await monitoringService.resumeSession(sessionId);
+      await monitoringService.resumeSession(sessionId, sessionToken);
       setIsPaused(false);
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ action: 'resume' }));
@@ -394,7 +454,7 @@ export default function DriverMonitoringPage() {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close();
       }
-      await monitoringService.endSession(sessionId);
+      await monitoringService.endSession(sessionId, sessionToken);
 
       const elapsedSec = Math.round((Date.now() - startTimeRef.current) / 1000);
       const minutes = Math.floor(elapsedSec / 60);
@@ -452,6 +512,51 @@ export default function DriverMonitoringPage() {
     statusIcon = <AlertTriangle className="w-5 h-5 text-cyan-400" />;
   }
 
+  if (sessionLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl flex flex-col items-center gap-4">
+          <Loader2 className="w-12 h-12 text-cyan-400 animate-spin" />
+          <h2 className="text-xl font-bold tracking-wide text-white">Validating Safety Session</h2>
+          <p className="text-sm text-slate-400">Connecting to Fleet Safety DMS server and verifying active trip authorization...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (sessionError) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="bg-slate-900 border border-rose-500/30 rounded-3xl p-8 max-w-lg w-full text-center shadow-2xl flex flex-col items-center gap-5">
+          <div className="w-16 h-16 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
+            <AlertTriangle className="w-8 h-8" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-bold tracking-wide text-rose-300">Safety Verification Notice</h2>
+            <p className="text-sm text-slate-300 leading-relaxed bg-slate-950/60 p-3 rounded-xl border border-slate-800 font-mono text-left break-words">
+              {sessionError}
+            </p>
+          </div>
+          <div className="flex items-center gap-3 w-full pt-2">
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="flex-1 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-sm transition"
+            >
+              Retry Connection
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/driver')}
+              className="flex-1 py-3 px-4 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-sm shadow-lg shadow-cyan-600/30 transition"
+            >
+              Return to Cab Portal
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 sm:p-6 font-sans select-none">
@@ -474,12 +579,39 @@ export default function DriverMonitoringPage() {
               <option key={cam.deviceId} value={cam.deviceId}>{cam.label || `Camera ${cam.deviceId}`}</option>
             ))}
           </select>
-          <button onClick={() => {
-             const newMode = !debugMode;
-             setDebugMode(newMode);
-             debugModeRef.current = newMode;
-          }} className={`text-xs px-2 py-1 rounded border border-slate-700 font-bold transition ${debugMode ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
+          <button 
+             type="button"
+             onClick={() => {
+               if (debugMode && debugTab === 'ir') {
+                 setDebugMode(false);
+                 debugModeRef.current = false;
+               } else {
+                 setDebugMode(true);
+                 setDebugTab('ir');
+                 debugModeRef.current = true;
+               }
+             }} 
+             className={`text-xs px-2.5 py-1 rounded-lg border font-bold transition flex items-center gap-1.5 ${debugMode && (debugTab === 'ir' || debugTab === 'all') ? 'bg-indigo-600 border-indigo-500 text-white shadow-md shadow-indigo-600/30' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}
+          >
+             <span className={`w-2 h-2 rounded-full ${debugMode && (debugTab === 'ir' || debugTab === 'all') ? 'bg-cyan-400 animate-pulse' : 'bg-slate-500'}`} />
              IR Debug
+          </button>
+          <button 
+             type="button"
+             onClick={() => {
+               if (debugMode && debugTab === 'cnn') {
+                 setDebugMode(false);
+                 debugModeRef.current = false;
+               } else {
+                 setDebugMode(true);
+                 setDebugTab('cnn');
+                 debugModeRef.current = true;
+               }
+             }} 
+             className={`text-xs px-2.5 py-1 rounded-lg border font-bold transition flex items-center gap-1.5 ${debugMode && (debugTab === 'cnn' || debugTab === 'all') ? 'bg-cyan-600 border-cyan-500 text-white shadow-md shadow-cyan-600/30' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'}`}
+          >
+             <span className={`w-2 h-2 rounded-full ${debugMode && (debugTab === 'cnn' || debugTab === 'all') ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+             CNN Section
           </button>
           <AlcoholSafetyWarning sessionId={sessionId} showBadge={true} />
           <div className={`w-3 h-3 rounded-full ${
@@ -638,52 +770,107 @@ export default function DriverMonitoringPage() {
               </div>
             )}
 
-            {debugMode && debugData && (
-              <div className="absolute left-4 bottom-4 bg-black/90 p-4 rounded-xl border-2 border-emerald-500/50 text-[10px] font-mono text-cyan-400 z-20 flex flex-col gap-3 shadow-2xl min-w-[300px]">
-                 <div className="flex items-center justify-between border-b border-slate-700 pb-2">
-                   <div className="font-bold text-emerald-400 tracking-wider">IR HARDWARE VALIDATION</div>
-                   <div className="bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded text-[9px] animate-pulse">LIVE</div>
+            {debugMode && (
+              <div className="absolute left-4 bottom-4 bg-slate-950/95 backdrop-blur-md p-4 rounded-2xl border border-indigo-500/50 text-[10px] font-mono text-cyan-400 z-20 flex flex-col gap-3 shadow-2xl min-w-[320px] max-w-[380px]">
+                 <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                   <div className="font-bold text-indigo-400 tracking-wider flex items-center gap-1.5">
+                     <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                     {debugTab === 'ir' ? 'IR HARDWARE VALIDATION' : debugTab === 'cnn' ? 'EYE CNN SLEEPINESS MODEL' : 'IR HARDWARE & CNN VALIDATION'}
+                   </div>
+                   <div className="flex items-center gap-1.5">
+                     <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-0.5 text-[9px]">
+                       <button
+                         type="button"
+                         onClick={() => setDebugTab('all')}
+                         className={`px-1.5 py-0.5 rounded ${debugTab === 'all' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-white'}`}
+                       >
+                         ALL
+                       </button>
+                       <button
+                         type="button"
+                         onClick={() => setDebugTab('ir')}
+                         className={`px-1.5 py-0.5 rounded ${debugTab === 'ir' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-white'}`}
+                       >
+                         IR
+                       </button>
+                       <button
+                         type="button"
+                         onClick={() => setDebugTab('cnn')}
+                         className={`px-1.5 py-0.5 rounded ${debugTab === 'cnn' ? 'bg-cyan-600 text-white font-bold' : 'text-slate-400 hover:text-white'}`}
+                       >
+                         CNN
+                       </button>
+                     </div>
+                     <button 
+                       type="button"
+                       onClick={() => {
+                         setDebugMode(false);
+                         debugModeRef.current = false;
+                       }}
+                       className="text-slate-500 hover:text-white px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-[9px]"
+                     >
+                       ✕
+                     </button>
+                   </div>
                  </div>
                  
-                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-slate-800 pb-2">
-                   <div>FACE DETECTED: <span className={metrics.face_detected ? "text-emerald-400" : "text-rose-400"}>{metrics.face_detected ? 'YES' : 'NO'}</span></div>
-                   <div>FPS: <span className="text-white">{fps}</span></div>
-                   <div>EAR: <span className="text-white">{metrics.ear?.toFixed(3)}</span></div>
-                   <div>MAR: <span className="text-white">{metrics.mar?.toFixed(3)}</span></div>
-                   <div>PERCLOS: <span className="text-white">{(metrics.perclos * 100).toFixed(1)}%</span></div>
-                   <div>PITCH: <span className="text-white">{metrics.head_pitch?.toFixed(1)}°</span></div>
-                 </div>
+                 {(debugTab === 'all' || debugTab === 'ir') && (
+                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-slate-800 pb-2">
+                     <div>FACE DETECTED: <span className={metrics.face_detected ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>{metrics.face_detected ? 'YES' : 'NO'}</span></div>
+                     <div>FPS: <span className="text-white font-bold">{fps}</span></div>
+                     <div>EAR: <span className="text-white">{metrics.ear?.toFixed(3)}</span></div>
+                     <div>MAR: <span className="text-white">{metrics.mar?.toFixed(3)}</span></div>
+                     <div>PERCLOS: <span className="text-white">{((metrics.perclos || 0) * 100).toFixed(1)}%</span></div>
+                     <div>PITCH: <span className="text-white">{metrics.head_pitch?.toFixed(1)}°</span></div>
+                   </div>
+                 )}
 
-                 <div className="flex gap-4 border-b border-slate-800 pb-2 justify-center">
-                   <div className="text-center">
-                     <div className="text-slate-500 mb-1 text-[9px] tracking-wider">LEFT EYE CROP</div>
-                     {debugData.left_eye ? <img src={`data:image/jpeg;base64,${debugData.left_eye}`} className="w-20 h-20 object-cover border border-slate-700 mx-auto rounded" /> : <div className="w-20 h-20 bg-slate-800 mx-auto rounded" />}
-                     <div className="mt-1">P: <span className="text-white">{debugData.cnn_p_left !== undefined ? debugData.cnn_p_left.toFixed(3) : '-'}</span></div>
-                   </div>
-                   <div className="text-center">
-                     <div className="text-slate-500 mb-1 text-[9px] tracking-wider">RIGHT EYE CROP</div>
-                     {debugData.right_eye ? <img src={`data:image/jpeg;base64,${debugData.right_eye}`} className="w-20 h-20 object-cover border border-slate-700 mx-auto rounded" /> : <div className="w-20 h-20 bg-slate-800 mx-auto rounded" />}
-                     <div className="mt-1">P: <span className="text-white">{debugData.cnn_p_right !== undefined ? debugData.cnn_p_right.toFixed(3) : '-'}</span></div>
-                   </div>
-                 </div>
+                 {(debugTab === 'all' || debugTab === 'cnn') && (
+                   <>
+                     <div className="flex gap-4 border-b border-slate-800 pb-2 justify-center">
+                       <div className="text-center">
+                         <div className="text-slate-400 mb-1 text-[9px] tracking-wider font-semibold">LEFT EYE CROP</div>
+                         {debugData?.left_eye ? (
+                           <img src={`data:image/jpeg;base64,${debugData.left_eye}`} alt="Left Eye" className="w-20 h-20 object-cover border border-slate-700 mx-auto rounded-lg shadow-sm" />
+                         ) : (
+                           <div className="w-20 h-20 bg-slate-900/80 border border-slate-800 mx-auto rounded-lg flex items-center justify-center text-slate-500 text-[9px] text-center px-1">
+                             {metrics.face_detected ? 'Cropping...' : 'No Face'}
+                           </div>
+                         )}
+                         <div className="mt-1">P(Sleepy): <span className="text-white font-bold">{debugData?.cnn_p_left !== undefined ? debugData.cnn_p_left.toFixed(3) : (metrics.extra_sensors?.cnn_p_left !== undefined ? metrics.extra_sensors.cnn_p_left.toFixed(3) : '-')}</span></div>
+                       </div>
+                       <div className="text-center">
+                         <div className="text-slate-400 mb-1 text-[9px] tracking-wider font-semibold">RIGHT EYE CROP</div>
+                         {debugData?.right_eye ? (
+                           <img src={`data:image/jpeg;base64,${debugData.right_eye}`} alt="Right Eye" className="w-20 h-20 object-cover border border-slate-700 mx-auto rounded-lg shadow-sm" />
+                         ) : (
+                           <div className="w-20 h-20 bg-slate-900/80 border border-slate-800 mx-auto rounded-lg flex items-center justify-center text-slate-500 text-[9px] text-center px-1">
+                             {metrics.face_detected ? 'Cropping...' : 'No Face'}
+                           </div>
+                         )}
+                         <div className="mt-1">P(Sleepy): <span className="text-white font-bold">{debugData?.cnn_p_right !== undefined ? debugData.cnn_p_right.toFixed(3) : (metrics.extra_sensors?.cnn_p_right !== undefined ? metrics.extra_sensors.cnn_p_right.toFixed(3) : '-')}</span></div>
+                       </div>
+                     </div>
 
-                 <div className="grid grid-cols-1 gap-1">
-                   <div className="flex justify-between">
-                     <span>AVG CNN P(SLEEPY):</span>
-                     <span className={`font-bold ${metrics.fusion?.cnn_p_sleepy > 0.5 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                       {metrics.fusion?.cnn_p_sleepy?.toFixed(3)} 
-                       <span className="ml-2">({metrics.fusion?.cnn_p_sleepy > 0.5 ? 'SLEEPY' : 'AWAKE'})</span>
-                     </span>
-                   </div>
-                   <div className="flex justify-between text-slate-400">
-                     <span>CNN INFERENCE LATENCY:</span>
-                     <span className="text-white">{metrics.cnn_latency_ms?.toFixed(1)} ms</span>
-                   </div>
-                   <div className="flex justify-between text-slate-400">
-                     <span>TOTAL LATENCY:</span>
-                     <span className="text-white">{metrics.total_latency_ms?.toFixed(1)} ms</span>
-                   </div>
-                 </div>
+                     <div className="grid grid-cols-1 gap-1">
+                       <div className="flex justify-between">
+                         <span>AVG CNN P(SLEEPY):</span>
+                         <span className={`font-bold ${(metrics.fusion?.cnn_p_sleepy || 0) > 0.5 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                           {(metrics.fusion?.cnn_p_sleepy !== undefined ? metrics.fusion.cnn_p_sleepy.toFixed(3) : (metrics.extra_sensors?.cnn_p_sleepy !== undefined ? metrics.extra_sensors.cnn_p_sleepy.toFixed(3) : '0.000'))} 
+                           <span className="ml-1.5">({(metrics.fusion?.cnn_p_sleepy || 0) > 0.5 ? 'SLEEPY' : 'AWAKE'})</span>
+                         </span>
+                       </div>
+                       <div className="flex justify-between text-slate-400">
+                         <span>CNN INFERENCE LATENCY:</span>
+                         <span className="text-white">{metrics.cnn_latency_ms !== undefined ? metrics.cnn_latency_ms.toFixed(1) : (metrics.extra_sensors?.cnn_latency_ms !== undefined ? metrics.extra_sensors.cnn_latency_ms.toFixed(1) : '0.0')} ms</span>
+                       </div>
+                       <div className="flex justify-between text-slate-400">
+                         <span>TOTAL PIPELINE LATENCY:</span>
+                         <span className="text-white">{metrics.total_latency_ms ? metrics.total_latency_ms.toFixed(1) : '0.0'} ms</span>
+                       </div>
+                     </div>
+                   </>
+                 )}
               </div>
             )}
 
@@ -819,7 +1006,29 @@ export default function DriverMonitoringPage() {
             </div>
           </div>
 
-          {/* Metric 6: KSS Fatigue Scale */}
+          {/* Metric 6: CNN Eye Sleepiness Model */}
+          <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-3.5">
+            <div className="flex justify-between text-xs mb-1.5">
+              <span className="text-slate-400 font-semibold flex items-center gap-1.5">
+                <Eye className="w-3.5 h-3.5 text-indigo-400" /> CNN Eye State (Sleepiness)
+              </span>
+              <span className={`font-mono font-bold ${(metrics.fusion?.cnn_p_sleepy || metrics.extra_sensors?.cnn_p_sleepy || 0) > 0.5 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                {(((metrics.fusion?.cnn_p_sleepy ?? metrics.extra_sensors?.cnn_p_sleepy ?? 0)) * 100).toFixed(1)}% {((metrics.fusion?.cnn_p_sleepy ?? metrics.extra_sensors?.cnn_p_sleepy ?? 0)) > 0.5 ? 'SLEEPY' : 'AWAKE'}
+              </span>
+            </div>
+            <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className={`h-full transition-all duration-100 ${((metrics.fusion?.cnn_p_sleepy ?? metrics.extra_sensors?.cnn_p_sleepy ?? 0)) > 0.5 ? 'bg-amber-500' : 'bg-indigo-500'}`}
+                style={{ width: `${Math.min(100, ((metrics.fusion?.cnn_p_sleepy ?? metrics.extra_sensors?.cnn_p_sleepy ?? 0)) * 100)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-[10px] text-slate-500 mt-1">
+              <span>Model: ONNX 32×32 Grayscale</span>
+              <span>Latency: {metrics.cnn_latency_ms ? `${metrics.cnn_latency_ms.toFixed(1)}ms` : (metrics.extra_sensors?.cnn_latency_ms ? `${metrics.extra_sensors.cnn_latency_ms.toFixed(1)}ms` : '<2ms')}</span>
+            </div>
+          </div>
+
+          {/* Metric 7: KSS Fatigue Scale */}
           <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-3.5 flex items-center justify-between">
             <div>
               <span className="text-[10px] text-slate-500 uppercase font-semibold">Euro NCAP KSS Scale</span>

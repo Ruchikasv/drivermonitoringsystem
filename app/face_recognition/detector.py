@@ -57,9 +57,11 @@ class FaceDetector:
         self,
         model_name: str | None = None,
         model_dir: str | None = None,
+        det_size: tuple[int, int] | None = None,
     ) -> None:
         self._model_name = model_name or settings.INSIGHTFACE_MODEL_NAME
         self._model_dir = model_dir or str(settings.MODEL_DIR)
+        self._det_size = det_size or getattr(settings, "FACE_DET_SIZE", (320, 320))
         self._app = None  # Lazy-loaded InsightFace FaceAnalysis
 
     # -- Lazy model loading ---------------------------------------------------
@@ -70,9 +72,10 @@ class FaceDetector:
             return
 
         logger.info(
-            "Loading InsightFace model '%s' from '%s' …",
+            "Loading InsightFace model '%s' from '%s' (det_size=%s) …",
             self._model_name,
             self._model_dir,
+            self._det_size,
         )
 
         try:
@@ -100,7 +103,7 @@ class FaceDetector:
         )
         # ctx_id=0 → use first GPU if available; -1 → CPU only.
         # For a laptop prototype, CPU is fine.
-        self._app.prepare(ctx_id=-1, det_size=(640, 640))
+        self._app.prepare(ctx_id=-1, det_size=self._det_size)
         logger.info("InsightFace model loaded successfully with providers: %s", providers)
 
     # -- Public API -----------------------------------------------------------
@@ -126,6 +129,9 @@ class FaceDetector:
         list[DetectedFace]
             Detected faces sorted by confidence (highest first).
         """
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return []
+
         self._ensure_model_loaded()
 
         if min_confidence is None:
@@ -139,11 +145,15 @@ class FaceDetector:
             if score < min_confidence:
                 continue
 
+            emb = getattr(face, "normed_embedding", None)
+            if emb is None:
+                continue
+
             results.append(
                 DetectedFace(
                     bbox=face.bbox.astype(np.int32),
                     score=score,
-                    embedding=face.normed_embedding,  # Already L2-normalised.
+                    embedding=emb,  # Already L2-normalised.
                 )
             )
 

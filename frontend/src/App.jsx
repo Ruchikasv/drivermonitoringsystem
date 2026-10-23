@@ -32,8 +32,8 @@ export default function App() {
       <AuthProvider>
         <Routes>
           {/* Owner Authentication Routes */}
-          <Route path="/owner/login" element={<OwnerLoginPage />} />
-          <Route path="/owner/register" element={<OwnerRegisterPage />} />
+          <Route path="/owner/login" element={<OwnerLoginPage key="owner-login" />} />
+          <Route path="/owner/register" element={<OwnerRegisterPage key="owner-register" />} />
 
           {/* Driver Cab Portal Routes (Independent layout, driver-facing, no owner login required) */}
           <Route path="/driver" element={<DriverPortalPage />} />

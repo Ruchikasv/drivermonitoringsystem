@@ -9,12 +9,12 @@ DELETE /sessions/{session_id}     End a trip (COMPLETED)
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api.dependencies import get_optional_owner
 from app.database.connection import get_connection
-from app.database.monitoring_repository import MonitoringRepository
+from app.database.monitoring_repository import MonitoringRepository, MonitoringSession
 from app.database.owner_repository import OwnerRecord
 
 router = APIRouter(prefix="/sessions", tags=["Monitoring Sessions"])
@@ -113,19 +113,42 @@ def list_active_sessions(
     ]
 
 
+def _get_authorized_session(
+    session_id: int,
+    token: Optional[str],
+    current_owner: Optional[OwnerRecord],
+    repo: MonitoringRepository,
+) -> MonitoringSession:
+    """Authorize access to a session via driver capability token or owner account."""
+    session = repo.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    # 1. If driver capability token is provided, authorize via token
+    if token:
+        if not session.session_token or session.session_token.strip() != token.strip():
+            raise HTTPException(status_code=403, detail="Invalid session token for this monitoring session")
+        return session
+
+    # 2. If accessed by an owner without token, ensure tenant scoping
+    if current_owner is not None and session.owner_id is not None:
+        if session.owner_id != current_owner.owner_id:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    return session
+
+
 @router.get("/{session_id}", response_model=SessionResponse)
 def get_session(
     session_id: int,
+    token: Optional[str] = Query(None, description="Driver session token"),
     repo: MonitoringRepository = Depends(_get_repo),
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
-    """Get a single monitoring session by ID with owner validation."""
+    """Get a single monitoring session by ID with owner or driver-token validation."""
     from app.hardware.alcohol_sensor import mq3_serial_reader
     is_locked = mq3_serial_reader.is_locked()
-    owner_id = current_owner.owner_id if current_owner else None
-    session = repo.get_session(session_id, owner_id=owner_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    session = _get_authorized_session(session_id, token, current_owner, repo)
     return SessionResponse(
         session_id=session.session_id,
         driver_id=session.driver_id,
@@ -144,20 +167,18 @@ def get_session(
 @router.post("/{session_id}/pause", response_model=SessionResponse)
 def pause_session(
     session_id: int,
+    token: Optional[str] = Query(None, description="Driver session token"),
     repo: MonitoringRepository = Depends(_get_repo),
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
     """Pause an active monitoring session."""
-    owner_id = current_owner.owner_id if current_owner else None
-    session = repo.get_session(session_id, owner_id=owner_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    session = _get_authorized_session(session_id, token, current_owner, repo)
     if session.status == "PAUSED":
         raise HTTPException(status_code=400, detail="Trip is already paused")
     if session.status != "ACTIVE":
         raise HTTPException(status_code=400, detail=f"Cannot pause trip in status '{session.status}'")
 
-    success = repo.pause_session(session_id, owner_id=owner_id)
+    success = repo.pause_session(session_id, owner_id=None)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to pause session")
 
@@ -183,6 +204,7 @@ def pause_session(
 @router.post("/{session_id}/resume", response_model=SessionResponse)
 def resume_session(
     session_id: int,
+    token: Optional[str] = Query(None, description="Driver session token"),
     repo: MonitoringRepository = Depends(_get_repo),
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
@@ -194,16 +216,13 @@ def resume_session(
             detail="VEHICLE OPERATION LOCKED OUT: Potential alcohol detected. Trip resume is restricted pending authorized owner resolution.",
         )
 
-    owner_id = current_owner.owner_id if current_owner else None
-    session = repo.get_session(session_id, owner_id=owner_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    session = _get_authorized_session(session_id, token, current_owner, repo)
     if session.status == "ACTIVE":
         raise HTTPException(status_code=400, detail="Trip is already running")
     if session.status != "PAUSED":
         raise HTTPException(status_code=400, detail=f"Cannot resume trip in status '{session.status}'")
 
-    success = repo.resume_session(session_id, owner_id=owner_id)
+    success = repo.resume_session(session_id, owner_id=None)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to resume session")
 
@@ -229,14 +248,12 @@ def resume_session(
 @router.delete("/{session_id}", response_model=dict)
 def end_session(
     session_id: int,
+    token: Optional[str] = Query(None, description="Driver session token"),
     repo: MonitoringRepository = Depends(_get_repo),
     current_owner: Optional[OwnerRecord] = Depends(get_optional_owner),
 ):
     """End a monitoring session (driver pressed END TRIP or owner ended)."""
-    owner_id = current_owner.owner_id if current_owner else None
-    session = repo.get_session(session_id, owner_id=owner_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    session = _get_authorized_session(session_id, token, current_owner, repo)
     if session.status not in ("ACTIVE", "PAUSED"):
         raise HTTPException(status_code=400, detail=f"Session {session_id} is already {session.status}")
 

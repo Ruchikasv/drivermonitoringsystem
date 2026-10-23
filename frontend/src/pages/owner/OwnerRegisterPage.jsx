@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Shield, Lock, Mail, User, ArrowRight, AlertCircle, Truck, CheckCircle2, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { authService } from '../../services/authService';
@@ -15,6 +15,16 @@ export const OwnerRegisterPage = () => {
 
   const { register } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Guarantee all registration form fields start empty and never inherit login state
+  useEffect(() => {
+    setName('');
+    setEmail('');
+    setPassword('');
+    setConfirmPassword('');
+    setError(null);
+  }, [location.pathname]);
 
   useEffect(() => {
     let mounted = true;
@@ -98,9 +108,9 @@ export const OwnerRegisterPage = () => {
             </div>
           )}
 
-          <form className="space-y-4" onSubmit={handleSubmit}>
+          <form className="space-y-4" onSubmit={handleSubmit} autoComplete="off">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+              <label htmlFor="owner-register-name" className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                 Full Name / Organization
               </label>
               <div className="relative rounded-xl shadow-sm">
@@ -108,8 +118,11 @@ export const OwnerRegisterPage = () => {
                   <User className="h-5 w-5 text-slate-500" />
                 </div>
                 <input
+                  id="owner-register-name"
+                  name="owner_reg_name"
                   type="text"
                   required
+                  autoComplete="name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. John Doe Logistics"
@@ -119,7 +132,7 @@ export const OwnerRegisterPage = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+              <label htmlFor="owner-register-email" className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                 Work Email Address
               </label>
               <div className="relative rounded-xl shadow-sm">
@@ -127,18 +140,21 @@ export const OwnerRegisterPage = () => {
                   <Mail className="h-5 w-5 text-slate-500" />
                 </div>
                 <input
+                  id="owner-register-email"
+                  name="owner_reg_email"
                   type="email"
                   required
+                  autoComplete="off"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="manager@fleet.com"
+                  placeholder="name@company.com"
                   className="block w-full pl-11 pr-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm transition-all"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+              <label htmlFor="owner-register-password" className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                 Master Password (min. 8 characters)
               </label>
               <div className="relative rounded-xl shadow-sm">
@@ -146,18 +162,21 @@ export const OwnerRegisterPage = () => {
                   <Lock className="h-5 w-5 text-slate-500" />
                 </div>
                 <input
+                  id="owner-register-password"
+                  name="owner_reg_password"
                   type="password"
                   required
+                  autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
+                  placeholder="At least 8 characters"
                   className="block w-full pl-11 pr-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm transition-all"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
+              <label htmlFor="owner-register-confirm-password" className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-1.5">
                 Confirm Password
               </label>
               <div className="relative rounded-xl shadow-sm">
@@ -165,11 +184,14 @@ export const OwnerRegisterPage = () => {
                   <CheckCircle2 className="h-5 w-5 text-slate-500" />
                 </div>
                 <input
+                  id="owner-register-confirm-password"
+                  name="owner_reg_confirm_password"
                   type="password"
                   required
+                  autoComplete="new-password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="••••••••"
+                  placeholder="Re-enter password"
                   className="block w-full pl-11 pr-4 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm transition-all"
                 />
               </div>

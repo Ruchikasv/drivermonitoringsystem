@@ -3,10 +3,19 @@ import axios from 'axios';
 /**
  * Central API Client configuration for FastAPI integration with Owner Auth & Cookies
  */
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+export const getApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  if (typeof window !== 'undefined' && window.location) {
+    const { protocol, hostname } = window.location;
+    return `${protocol}//${hostname}:8000`;
+  }
+  return 'http://127.0.0.1:8000';
+};
 
 export const apiClient = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: getApiBaseUrl(),
   timeout: 30000,
   withCredentials: true, // Automatically transmits HttpOnly session cookies
   headers: {
@@ -18,7 +27,12 @@ export const apiClient = axios.create({
 // Request interceptor to attach Bearer token fallback if available in localStorage/session
 apiClient.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('dms_owner_token');
+    // Keep baseURL synchronized with current origin if not explicitly configured
+    if (!config.baseURL || config.baseURL === 'http://127.0.0.1:8000') {
+      config.baseURL = getApiBaseUrl();
+    }
+    const isDriverPortal = typeof window !== 'undefined' && window.location?.pathname?.startsWith('/driver');
+    const token = !isDriverPortal ? localStorage.getItem('dms_owner_token') : null;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -39,7 +53,10 @@ apiClient.interceptors.response.use(
         localStorage.removeItem('dms_owner_profile');
       }
     }
-    console.warn(`[API Error] ${error.config?.url || 'Request'} failed:`, error.response?.data?.detail || error.message);
+    const detailMsg = error.response?.data?.detail;
+    const isNetworkErr = error.message === 'Network Error' || error.code === 'ERR_NETWORK';
+    const msg = detailMsg || (isNetworkErr ? `Backend unreachable at ${getApiBaseUrl()}. Ensure server is running on port 8000.` : error.message);
+    console.warn(`[API Error] ${error.config?.url || 'Request'} failed:`, msg);
     return Promise.reject(error);
   }
 );

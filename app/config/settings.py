@@ -43,13 +43,22 @@ CAMERA_INDEX: int = int(os.getenv("DMS_CAMERA_INDEX", "0"))
 INSIGHTFACE_MODEL_NAME: str = os.getenv("DMS_MODEL_NAME", "buffalo_l")
 
 # Detection confidence threshold — faces with scores below this are ignored.
-DETECTION_CONFIDENCE: float = float(os.getenv("DMS_DETECTION_CONFIDENCE", "0.5"))
+DETECTION_CONFIDENCE: float = float(os.getenv("DMS_DETECTION_CONFIDENCE", "0.50"))
 
 # Recognition similarity threshold.
 # Cosine similarity above this → positive match.
-# Typical same-person scores: 0.5–0.8; different-person scores: 0.0–0.3.
-# Starting at 0.45 as a conservative default — tune after real-world testing.
-RECOGNITION_THRESHOLD: float = float(os.getenv("DMS_RECOGNITION_THRESHOLD", "0.45"))
+# Typical same-person scores: 0.55–0.85; different-person scores: -0.10–0.35.
+# At 0.45 impostor FAR is elevated; 0.50 enforces strict identity separation.
+RECOGNITION_THRESHOLD: float = float(os.getenv("DMS_RECOGNITION_THRESHOLD", "0.50"))
+
+# Real-time face detection input resolution (width, height) for fast 15 FPS execution
+FACE_DET_SIZE: tuple[int, int] = (320, 320)
+
+# Number of consecutive matching frames required to temporally confirm driver identity
+IDENTITY_CONFIRMATION_FRAMES: int = int(os.getenv("DMS_IDENTITY_CONFIRMATION_FRAMES", "2"))
+
+# Minimum face bounding box dimension in pixels to qualify for biometric matching
+MIN_FACE_SIZE_PX: int = int(os.getenv("DMS_MIN_FACE_SIZE_PX", "45"))
 
 # Dimensionality of ArcFace embeddings (do not change unless switching models).
 EMBEDDING_DIM: int = 512
